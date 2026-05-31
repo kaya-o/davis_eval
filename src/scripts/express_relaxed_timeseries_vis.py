@@ -217,27 +217,7 @@ def plot_timeseries(agg_df, raw_df, result_dir, output_path, subset, total_runs,
     for ax in axes[-1, :]:
         ax.set_xlabel("Time t")
 
-    relaxed_df = raw_df[raw_df["strategy"] == "RELAXED-EXPRESS"]
-    added_count = int(bool_series(relaxed_df["relaxed_express_added_nonexact"]).sum())
-    if subset == "relaxed-added-nonexact":
-        n_events = len(raw_df[raw_df["strategy"] == "RELAXED-EXPRESS"])
-        n_runs = raw_df["run"].nunique()
-        n_times = raw_df["t"].nunique()
-        caption = (
-            f"Filtered to {n_events:,} selected events across {n_runs} runs and "
-            f"{n_times:,} time indices where RELAXED-EXPRESS added non-exact "
-            "calibration points. Each point is the mean over selected events at that t."
-        )
-    else:
-        caption = (
-            "All selected events are included; each point is the mean over selected events "
-            f"at that t. For EXPRESS interval length, inf_rule={inf_rule}. "
-            f"RELAXED-EXPRESS added non-exact points in {added_count:,} of "
-            f"{len(relaxed_df):,} selected events."
-        )
-
-    fig.text(0.5, 0.01, caption, ha="center", va="bottom", fontsize=9)
-    fig.tight_layout(rect=(0, 0.04, 1, 0.95))
+    fig.tight_layout(rect=(0, 0.02, 1, 0.95))
 
     output_path = Path(output_path)
     output_path.parent.mkdir(parents=True, exist_ok=True)

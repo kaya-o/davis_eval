@@ -238,14 +238,9 @@ def plot_sale_ramdas_style(
     ax.grid(alpha=0.25)
     ax.legend(loc="upper right")
 
-    caption = (
-        "Boxes show, top to bottom: infinite interval fraction, "
-        "median interval length, average calibration size."
-    )
-    fig.text(0.5, 0.045, caption, ha="center", va="bottom", fontsize=9)
     if parameter_text:
         fig.text(0.5, 0.018, parameter_text, ha="center", va="bottom", fontsize=9)
-    fig.tight_layout(rect=(0, 0.105, 1, 1))
+    fig.tight_layout(rect=(0, 0.08, 1, 1))
 
     save_path = Path(save_path)
     save_path.parent.mkdir(parents=True, exist_ok=True)
