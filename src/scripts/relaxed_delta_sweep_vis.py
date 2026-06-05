@@ -50,7 +50,7 @@ def summarize_run_metrics(raw_df, subset_label):
         return {
             "subset": subset_label,
             "miscoverage": np.nan,
-            "interval_length": np.nan,
+            "median_interval_length": np.nan,
             "mean_n_calibration": np.nan,
             "n_events": 0,
             "n_runs": 0,
@@ -60,7 +60,7 @@ def summarize_run_metrics(raw_df, subset_label):
         raw_df.groupby("run", sort=True)
         .agg(
             miscoverage=("miscovered", "mean"),
-            interval_length=("interval_length", "mean"),
+            median_interval_length=("interval_length", "median"),
             mean_n_calibration=("n_calibration", "mean"),
             n_events=("miscovered", "size"),
         )
@@ -69,7 +69,7 @@ def summarize_run_metrics(raw_df, subset_label):
     return {
         "subset": subset_label,
         "miscoverage": per_run["miscoverage"].mean(),
-        "interval_length": per_run["interval_length"].mean(),
+        "median_interval_length": per_run["median_interval_length"].mean(),
         "mean_n_calibration": per_run["mean_n_calibration"].mean(),
         "n_events": int(per_run["n_events"].sum()),
         "n_runs": int(len(per_run)),
@@ -124,7 +124,7 @@ def plot_delta_sweep(summary_df, save_path):
 
     panels = [
         ("miscoverage", "Miscoverage rate"),
-        ("interval_length", "Mean interval length"),
+        ("median_interval_length", "Median interval length"),
         ("mean_n_calibration", "Mean calibration set size"),
     ]
     subsets = [
