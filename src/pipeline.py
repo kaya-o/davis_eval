@@ -43,6 +43,9 @@ DEFAULT_CONFIG = {
         "k_express": 7500,
         "relaxed_express_target_size": None,
         "relaxed_express_rank_delta": None,
+        "weighted_express_lambda": 1.0,
+        "weighted_express_distance_normalization": "history_length",
+        "weighted_express_debug": False,
     },
     "strategies": DEFAULT_STRATEGIES,
 }
@@ -169,6 +172,12 @@ def run_experiment(config, config_path=None, output_root=DEFAULT_RESULTS_ROOT, r
     relaxed_express_rank_delta = conformal_config.get("relaxed_express_rank_delta")
     if relaxed_express_rank_delta is not None:
         relaxed_express_rank_delta = float(relaxed_express_rank_delta)
+    weighted_express_lambda = float(conformal_config.get("weighted_express_lambda", 1.0))
+    weighted_express_distance_normalization = conformal_config.get(
+        "weighted_express_distance_normalization",
+        "history_length",
+    )
+    weighted_express_debug = bool(conformal_config.get("weighted_express_debug", False))
 
     results = {
         strategy: {
@@ -241,6 +250,11 @@ def run_experiment(config, config_path=None, output_root=DEFAULT_RESULTS_ROOT, r
                         k=k_express,
                         relaxed_express_target_size=relaxed_express_target_size,
                         relaxed_express_rank_delta=relaxed_express_rank_delta,
+                        weighted_express_lambda=weighted_express_lambda,
+                        weighted_express_distance_normalization=(
+                            weighted_express_distance_normalization
+                        ),
+                        weighted_express_debug=weighted_express_debug,
                     )
 
                     results[strategy]["selected"] += 1
@@ -281,6 +295,54 @@ def run_experiment(config, config_path=None, output_root=DEFAULT_RESULTS_ROOT, r
                         "relaxed_express_added_nonexact": strategy_result.get(
                             "relaxed_express_added_nonexact"
                         ),
+                        "weighted_express_lambda": strategy_result.get(
+                            "weighted_express_lambda"
+                        ),
+                        "weighted_express_distance_normalization": strategy_result.get(
+                            "weighted_express_distance_normalization"
+                        ),
+                        "weighted_express_sum_raw_weights": strategy_result.get(
+                            "weighted_express_sum_raw_weights"
+                        ),
+                        "weighted_express_finite_mass": strategy_result.get(
+                            "weighted_express_finite_mass"
+                        ),
+                        "weighted_express_test_mass": strategy_result.get(
+                            "weighted_express_test_mass"
+                        ),
+                        "weighted_express_min_distance": strategy_result.get(
+                            "weighted_express_min_distance"
+                        ),
+                        "weighted_express_median_distance": strategy_result.get(
+                            "weighted_express_median_distance"
+                        ),
+                        "weighted_express_mean_distance": strategy_result.get(
+                            "weighted_express_mean_distance"
+                        ),
+                        "weighted_express_max_distance": strategy_result.get(
+                            "weighted_express_max_distance"
+                        ),
+                        "weighted_express_min_weight": strategy_result.get(
+                            "weighted_express_min_weight"
+                        ),
+                        "weighted_express_median_weight": strategy_result.get(
+                            "weighted_express_median_weight"
+                        ),
+                        "weighted_express_mean_weight": strategy_result.get(
+                            "weighted_express_mean_weight"
+                        ),
+                        "weighted_express_max_weight": strategy_result.get(
+                            "weighted_express_max_weight"
+                        ),
+                        "weighted_express_n_eff": strategy_result.get(
+                            "weighted_express_n_eff"
+                        ),
+                        "weighted_express_weighted_mean_distance": strategy_result.get(
+                            "weighted_express_weighted_mean_distance"
+                        ),
+                        "weighted_express_infinite": strategy_result.get(
+                            "weighted_express_infinite"
+                        ),
                     })
             conformal.append_online_point(score_t, point_prediction_t, y_t, s_t, current_bounds)
         
@@ -303,6 +365,35 @@ def run_experiment(config, config_path=None, output_root=DEFAULT_RESULTS_ROOT, r
             f"median_interval_length={median_interval_length:.3f}, "
             f"infinite_fraction={infinite_fraction:.3f}"
         )
+
+    if weighted_express_debug:
+        weighted_rows = [row for row in raw_rows if row["strategy"] == "WEIGHTED-EXPRESS"]
+        if weighted_rows:
+            print("WEIGHTED-EXPRESS diagnostics:")
+            for key in [
+                "weighted_express_sum_raw_weights",
+                "weighted_express_finite_mass",
+                "weighted_express_test_mass",
+                "weighted_express_median_distance",
+                "weighted_express_mean_distance",
+                "weighted_express_median_weight",
+                "weighted_express_mean_weight",
+                "weighted_express_n_eff",
+            ]:
+                values = np.asarray([
+                    row[key]
+                    for row in weighted_rows
+                    if row.get(key) is not None and not pd.isna(row.get(key))
+                ], dtype=float)
+                if len(values) == 0:
+                    continue
+                print(
+                    f"  {key}: "
+                    f"median={np.median(values):.6g}, "
+                    f"mean={np.mean(values):.6g}, "
+                    f"min={np.min(values):.6g}, "
+                    f"max={np.max(values):.6g}"
+                )
 
     output_dir = dump_experiment_results(
         results,

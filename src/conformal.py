@@ -98,6 +98,23 @@ def dump_experiment_results(
         "relaxed_express_mean_distance",
         "relaxed_express_relaxation_needed",
         "relaxed_express_added_nonexact",
+
+        "weighted_express_lambda",
+        "weighted_express_distance_normalization",
+        "weighted_express_sum_raw_weights",
+        "weighted_express_finite_mass",
+        "weighted_express_test_mass",
+        "weighted_express_min_distance",
+        "weighted_express_median_distance",
+        "weighted_express_mean_distance",
+        "weighted_express_max_distance",
+        "weighted_express_min_weight",
+        "weighted_express_median_weight",
+        "weighted_express_mean_weight",
+        "weighted_express_max_weight",
+        "weighted_express_n_eff",
+        "weighted_express_weighted_mean_distance",
+        "weighted_express_infinite",
     ]
 
     with raw_path.open("w", newline="") as f:
@@ -150,6 +167,7 @@ class Conformal:
         self.s_past = np.array([])
         self.bounds_past = np.array([])
         self.bounds_past_lower = np.array([])
+        self.residuals_past = np.array([])
 
         # Labeled online points only: safe for calibration.
         self.selected_scores_past = np.array([])
@@ -164,6 +182,7 @@ class Conformal:
         self._express_cache_key = None
         self._express_cache_value = None
         self._relaxed_express_last_diagnostics = None
+        self._weighted_express_last_diagnostics = None
 
     def selected_count(self, j=None):
         past = self.s_past if j is None else self.s_past[:j]
@@ -324,6 +343,52 @@ class Conformal:
         if self.randomized_calibration:
             return self.randomized_quantile_threshold(calibration_scores, alpha=alpha)
         return self.quantile_threshold(calibration_scores, alpha=alpha)
+
+    def weighted_quantile_threshold(self, calibration_scores, raw_weights, alpha=None):
+        alpha = self.alpha if alpha is None else alpha
+        if not 0 < alpha < 1:
+            raise ValueError(f"alpha must be in (0, 1), got {alpha}")
+
+        calibration_scores = np.asarray(calibration_scores, dtype=float)
+        raw_weights = np.asarray(raw_weights, dtype=float)
+
+        if len(calibration_scores) != len(raw_weights):
+            raise ValueError("calibration_scores and raw_weights must have the same length")
+        if len(calibration_scores) == 0:
+            return np.inf
+        if not np.all(np.isfinite(calibration_scores)):
+            raise ValueError("Weighted EXPRESS calibration scores must be finite")
+        if not np.all(np.isfinite(raw_weights)) or np.any(raw_weights < 0):
+            raise ValueError("Weighted EXPRESS raw weights must be finite and nonnegative")
+
+        denom = 1.0 + np.sum(raw_weights)
+        normalized_weights = raw_weights / denom
+
+        order = np.argsort(calibration_scores, kind="stable")
+        values = np.concatenate([calibration_scores[order], [np.inf]])
+        masses = np.concatenate([normalized_weights[order], [1.0 / denom]])
+
+        target = 1.0 - alpha
+        cumulative = np.cumsum(masses)
+        hit_idx = np.flatnonzero(cumulative >= target)
+
+        if len(hit_idx) == 0:
+            return np.inf
+        return values[hit_idx[0]]
+
+    def normalize_weighted_express_distances(self, distances, normalization, history_length):
+        normalization = "history_length" if normalization is None else normalization
+        distances = np.asarray(distances, dtype=float)
+
+        if normalization == "none":
+            return distances
+        if normalization == "history_length":
+            return distances / max(int(history_length), 1)
+
+        raise ValueError(
+            "weighted_express_distance_normalization must be one of "
+            f"['history_length', 'none'], got {normalization!r}"
+        )
 
     def interval_length_from_threshold(self, threshold):
         if np.isposinf(threshold):
@@ -491,6 +556,106 @@ class Conformal:
         }
 
         return candidate_residuals[chosen_idx]
+
+    def weighted_express(
+        self,
+        score_t,
+        current_bounds,
+        lambda_=1.0,
+        distance_normalization="history_length",
+        debug=False,
+    ):
+        """
+        Empirical soft relaxation of EXPRESS inspired by weighted conformal
+        prediction for nonexchangeable data.
+
+        Weights depend on the current EXPRESS signature distance, so this is
+        not a direct instantiation of a fixed-weight validity theorem.
+        """
+        del debug
+        lambda_ = float(lambda_)
+        if lambda_ < 0:
+            raise ValueError(f"weighted_express_lambda must be nonnegative, got {lambda_}")
+
+        current_lower, current_upper = current_bounds
+        candidate_residuals = np.concatenate([
+            self.residuals_off,
+            self.residuals_past,
+        ])
+        candidate_scores = np.concatenate([
+            self.scores_off,
+            self.scores_past,
+        ])
+
+        if len(candidate_residuals) == 0:
+            diagnostics = {
+                "lambda": lambda_,
+                "distance_normalization": distance_normalization,
+                "sum_raw_weights": 0.0,
+                "finite_mass": 0.0,
+                "test_mass": 1.0,
+                "min_distance": np.nan,
+                "median_distance": np.nan,
+                "mean_distance": np.nan,
+                "max_distance": np.nan,
+                "min_weight": np.nan,
+                "median_weight": np.nan,
+                "mean_weight": np.nan,
+                "max_weight": np.nan,
+                "n_eff": 0.0,
+                "weighted_mean_distance": np.nan,
+                "infinite": True,
+            }
+            self._weighted_express_last_diagnostics = diagnostics
+            return np.inf, 0, diagnostics
+
+        lower_bounds = np.append(self.bounds_past_lower, current_lower)
+        upper_bounds = np.append(self.bounds_past, current_upper)
+        distances = self.signature_distance_fast(
+            candidate_scores,
+            score_t,
+            lower_bounds,
+            upper_bounds,
+        )
+        distances = self.normalize_weighted_express_distances(
+            distances,
+            distance_normalization,
+            history_length=len(lower_bounds),
+        )
+
+        raw_weights = np.exp(-lambda_ * distances)
+        buffer = self.weighted_quantile_threshold(candidate_residuals, raw_weights)
+
+        sum_raw_weights = float(np.sum(raw_weights))
+        denom = 1.0 + sum_raw_weights
+        normalized_weights = raw_weights / denom
+        finite_weight_sum = float(np.sum(normalized_weights))
+        weight_square_sum = float(np.sum(normalized_weights ** 2))
+
+        diagnostics = {
+            "lambda": lambda_,
+            "distance_normalization": distance_normalization,
+            "sum_raw_weights": sum_raw_weights,
+            "finite_mass": float(sum_raw_weights / denom),
+            "test_mass": float(1.0 / denom),
+            "min_distance": float(np.min(distances)),
+            "median_distance": float(np.median(distances)),
+            "mean_distance": float(np.mean(distances)),
+            "max_distance": float(np.max(distances)),
+            "min_weight": float(np.min(raw_weights)),
+            "median_weight": float(np.median(raw_weights)),
+            "mean_weight": float(np.mean(raw_weights)),
+            "max_weight": float(np.max(raw_weights)),
+            "n_eff": float(1.0 / weight_square_sum) if weight_square_sum > 0 else 0.0,
+            "weighted_mean_distance": (
+                float(np.sum(normalized_weights * distances) / finite_weight_sum)
+                if finite_weight_sum > 0
+                else np.nan
+            ),
+            "infinite": bool(np.isinf(buffer)),
+        }
+        self._weighted_express_last_diagnostics = diagnostics
+        return buffer, len(candidate_residuals), diagnostics
     
     def k_express(self, score_t, k, current_bounds):
         current_lower, current_upper = current_bounds
@@ -539,6 +704,10 @@ class Conformal:
         self.s_past = np.append(self.s_past, s_t)
         self.bounds_past_lower = np.append(self.bounds_past_lower, lower_t)
         self.bounds_past = np.append(self.bounds_past, upper_t)
+        self.residuals_past = np.append(
+            self.residuals_past,
+            np.abs(y_t - point_prediction_t),
+        )
 
         if s_t:
             self.selected_scores_past = np.append(self.selected_scores_past, score_t)
@@ -565,6 +734,9 @@ class Conformal:
         k=5,
         relaxed_express_target_size=None,
         relaxed_express_rank_delta=None,
+        weighted_express_lambda=1.0,
+        weighted_express_distance_normalization="history_length",
+        weighted_express_debug=False,
     ):
         if strategy == "FULL":
             scores_cal = self.full()
@@ -592,6 +764,47 @@ class Conformal:
             )
         elif strategy == "K-EXPRESS":
             scores_cal = self.k_express(score_t, k, current_bounds)
+        elif strategy == "WEIGHTED-EXPRESS":
+            buffer, n_calibration, diagnostics = self.weighted_express(
+                score_t,
+                current_bounds,
+                lambda_=weighted_express_lambda,
+                distance_normalization=weighted_express_distance_normalization,
+                debug=weighted_express_debug,
+            )
+            covered = np.abs(y_t - point_prediction_t) <= buffer
+
+            return {
+                "miscovered": not covered,
+                "n_calibration": n_calibration,
+                "interval_length": self.interval_length_from_threshold(buffer),
+                "buffer": buffer,
+                "weighted_express_lambda": diagnostics.get("lambda", np.nan),
+                "weighted_express_distance_normalization": diagnostics.get(
+                    "distance_normalization",
+                    np.nan,
+                ),
+                "weighted_express_sum_raw_weights": diagnostics.get("sum_raw_weights", np.nan),
+                "weighted_express_finite_mass": diagnostics.get("finite_mass", np.nan),
+                "weighted_express_test_mass": diagnostics.get("test_mass", np.nan),
+                "weighted_express_min_distance": diagnostics.get("min_distance", np.nan),
+                "weighted_express_median_distance": diagnostics.get(
+                    "median_distance",
+                    np.nan,
+                ),
+                "weighted_express_mean_distance": diagnostics.get("mean_distance", np.nan),
+                "weighted_express_max_distance": diagnostics.get("max_distance", np.nan),
+                "weighted_express_min_weight": diagnostics.get("min_weight", np.nan),
+                "weighted_express_median_weight": diagnostics.get("median_weight", np.nan),
+                "weighted_express_mean_weight": diagnostics.get("mean_weight", np.nan),
+                "weighted_express_max_weight": diagnostics.get("max_weight", np.nan),
+                "weighted_express_n_eff": diagnostics.get("n_eff", np.nan),
+                "weighted_express_weighted_mean_distance": diagnostics.get(
+                    "weighted_mean_distance",
+                    np.nan,
+                ),
+                "weighted_express_infinite": diagnostics.get("infinite", np.nan),
+            }
         elif strategy == "EXPRESS-M":
             buffer, n_calibration = self.express_m(score_t, k, current_bounds)
             covered = np.abs(y_t - point_prediction_t) <= buffer

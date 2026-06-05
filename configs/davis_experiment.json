@@ -1,6 +1,6 @@
 {
   "experiment_name": "davis_muhat2_moving_window",
-  "n_runs": 100,
+  "n_runs": 10,
   "seed": 42,
   "data": {
     "path": "data/davis_other_data_models.csv",
@@ -21,7 +21,10 @@
   "conformal": {
     "alpha": 0.4,
     "randomized_calibration": true,
-    "k_express": 7500
+    "k_express": 7500,
+    "weighted_express_lambda": 10.0,
+    "weighted_express_distance_normalization": "history_length",
+    "weighted_express_debug": false
   },
   "strategies": [
     "FULL",
@@ -30,6 +33,7 @@
     "ADA",
     "EXPRESS",
     "RELAXED-EXPRESS",
+    "WEIGHTED-EXPRESS",
     "K-EXPRESS",
     "EXPRESS-M"
   ]
