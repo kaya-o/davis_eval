@@ -43,6 +43,7 @@ DEFAULT_CONFIG = {
         "k_express": 7500,
         "relaxed_express_target_size": None,
         "relaxed_express_rank_delta": None,
+        "express_distance": "endpoint",
         "weighted_express_lambda": 1.0,
         "weighted_express_distance_normalization": "rank",
         "weighted_express_max_distance": None,
@@ -174,6 +175,12 @@ def run_experiment(config, config_path=None, output_root=DEFAULT_RESULTS_ROOT, r
     relaxed_express_rank_delta = conformal_config.get("relaxed_express_rank_delta")
     if relaxed_express_rank_delta is not None:
         relaxed_express_rank_delta = float(relaxed_express_rank_delta)
+    express_distance = conformal_config.get("express_distance", "endpoint")
+    if express_distance not in {"endpoint", "hamming"}:
+        raise ValueError(
+            "conformal.express_distance must be one of ['endpoint', 'hamming'], "
+            f"got {express_distance!r}"
+        )
     weighted_express_lambda = float(conformal_config.get("weighted_express_lambda", 1.0))
     weighted_express_distance_normalization = conformal_config.get(
         "weighted_express_distance_normalization",
@@ -265,6 +272,7 @@ def run_experiment(config, config_path=None, output_root=DEFAULT_RESULTS_ROOT, r
                         weighted_express_max_distance=weighted_express_max_distance,
                         weighted_express_max_rank_pct=weighted_express_max_rank_pct,
                         weighted_express_debug=weighted_express_debug,
+                        express_distance=express_distance,
                     )
 
                     results[strategy]["selected"] += 1
@@ -293,6 +301,9 @@ def run_experiment(config, config_path=None, output_root=DEFAULT_RESULTS_ROOT, r
                         "relaxed_express_target_size": strategy_result.get(
                             "relaxed_express_target_size"
                         ),
+                        "relaxed_express_distance_backend": strategy_result.get(
+                            "relaxed_express_distance_backend"
+                        ),
                         "relaxed_express_max_distance": strategy_result.get(
                             "relaxed_express_max_distance"
                         ),
@@ -307,6 +318,9 @@ def run_experiment(config, config_path=None, output_root=DEFAULT_RESULTS_ROOT, r
                         ),
                         "weighted_express_lambda": strategy_result.get(
                             "weighted_express_lambda"
+                        ),
+                        "weighted_express_distance_backend": strategy_result.get(
+                            "weighted_express_distance_backend"
                         ),
                         "weighted_express_distance_normalization": strategy_result.get(
                             "weighted_express_distance_normalization"

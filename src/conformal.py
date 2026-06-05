@@ -94,12 +94,14 @@ def dump_experiment_results(
         "relaxed_express_exact_matches",
         "relaxed_express_chosen_size",
         "relaxed_express_target_size",
+        "relaxed_express_distance_backend",
         "relaxed_express_max_distance",
         "relaxed_express_mean_distance",
         "relaxed_express_relaxation_needed",
         "relaxed_express_added_nonexact",
 
         "weighted_express_lambda",
+        "weighted_express_distance_backend",
         "weighted_express_distance_normalization",
         "weighted_express_max_distance_cutoff",
         "weighted_express_max_rank_pct",
@@ -288,6 +290,81 @@ class Conformal:
 
         return np.abs(candidate_start - test_start) + np.abs(candidate_end - test_end)
 
+    def signature_distance_hamming(self, candidate_scores, score_t, lower_bounds, upper_bounds):
+        candidate_scores = np.asarray(candidate_scores)
+        lower_bounds = np.asarray(lower_bounds)
+        upper_bounds = np.asarray(upper_bounds)
+
+        if lower_bounds.size == 0:
+            return np.zeros(candidate_scores.shape[0], dtype=int)
+
+        # This computes exact Hamming distance between full binary selection
+        # signatures using the interval representation induced by the monotone
+        # moving-band selection rule. It is not endpoint L1 distance; it is the
+        # symmetric difference size between two interval signatures.
+        candidate_start = np.searchsorted(upper_bounds, candidate_scores, side="left")
+        candidate_end = np.searchsorted(lower_bounds, candidate_scores, side="right")
+        test_start = np.searchsorted(upper_bounds, score_t, side="left")
+        test_end = np.searchsorted(lower_bounds, score_t, side="right")
+
+        candidate_len = candidate_end - candidate_start
+        test_len = test_end - test_start
+
+        overlap_start = np.maximum(candidate_start, test_start)
+        overlap_end = np.minimum(candidate_end, test_end)
+        overlap_len = np.maximum(0, overlap_end - overlap_start)
+
+        return candidate_len + test_len - 2 * overlap_len
+
+    def signature_distance_hamming_slow(self, candidate_scores, score_t, lower_bounds, upper_bounds):
+        candidate_scores = np.asarray(candidate_scores)
+        lower_bounds = np.asarray(lower_bounds)
+        upper_bounds = np.asarray(upper_bounds)
+
+        if lower_bounds.size == 0:
+            return np.zeros(candidate_scores.shape[0], dtype=int)
+
+        candidate_signature = self.select_at_bounds(
+            candidate_scores.reshape(-1, 1),
+            (lower_bounds.reshape(1, -1), upper_bounds.reshape(1, -1)),
+        )
+        test_signature = self.select_at_bounds(
+            np.asarray([score_t]).reshape(-1, 1),
+            (lower_bounds.reshape(1, -1), upper_bounds.reshape(1, -1)),
+        )[0]
+
+        return np.sum(candidate_signature != test_signature.reshape(1, -1), axis=1)
+
+    def signature_distance(
+        self,
+        candidate_scores,
+        score_t,
+        lower_bounds,
+        upper_bounds,
+        distance_backend="endpoint",
+    ):
+        # Endpoint distance compares compressed interval endpoints of the selection
+        # signature. Hamming distance compares full binary counterfactual
+        # selection signatures directly; it is slower but more general.
+        if distance_backend == "endpoint":
+            return self.signature_distance_fast(
+                candidate_scores,
+                score_t,
+                lower_bounds,
+                upper_bounds,
+            )
+        if distance_backend == "hamming":
+            return self.signature_distance_hamming(
+                candidate_scores,
+                score_t,
+                lower_bounds,
+                upper_bounds,
+            )
+        raise ValueError(
+            "express_distance must be one of ['endpoint', 'hamming'], "
+            f"got {distance_backend!r}"
+        )
+
     def min_calibration_size_for_no_infinity(self, alpha=None):
         alpha = self.alpha if alpha is None else alpha
         return int(np.ceil((1.0 / alpha) - 1.0))
@@ -469,7 +546,14 @@ class Conformal:
         self._express_cache_value = selected_residuals
         return selected_residuals
 
-    def relaxed_express(self, score_t, current_bounds, target_size=None, rng=None):
+    def relaxed_express(
+        self,
+        score_t,
+        current_bounds,
+        target_size=None,
+        rng=None,
+        distance_backend="endpoint",
+    ):
         """
         Experimental controlled relaxation of EXPRESS.
 
@@ -503,6 +587,7 @@ class Conformal:
                 "chosen_size": 0,
                 "added_nonexact": 0,
                 "target_size": requested_target_size,
+                "distance_backend": distance_backend,
                 "max_distance": np.nan,
                 "mean_distance": np.nan,
                 "relaxation_needed": False,
@@ -512,11 +597,12 @@ class Conformal:
         lower_bounds = np.append(self.bounds_past_lower, current_lower)
         upper_bounds = np.append(self.bounds_past, current_upper)
 
-        distances = self.signature_distance_fast(
+        distances = self.signature_distance(
             candidate_scores,
             score_t,
             lower_bounds,
             upper_bounds,
+            distance_backend=distance_backend,
         )
 
         target_size = min(requested_target_size, len(candidate_residuals))
@@ -566,6 +652,7 @@ class Conformal:
             "chosen_size": int(len(chosen_idx)),
             "added_nonexact": added_nonexact,
             "target_size": requested_target_size,
+            "distance_backend": distance_backend,
             "max_distance": float(np.max(chosen_distances)) if len(chosen_distances) else np.nan,
             "mean_distance": float(np.mean(chosen_distances)) if len(chosen_distances) else np.nan,
             "relaxation_needed": exact_match_count < target_size,
@@ -581,6 +668,7 @@ class Conformal:
         distance_normalization="rank",
         max_distance=None,
         max_rank_pct=0.05,
+        distance_backend="endpoint",
         debug=False,
     ):
         """
@@ -617,6 +705,7 @@ class Conformal:
         if len(candidate_residuals) == 0:
             diagnostics = {
                 "lambda": lambda_,
+                "distance_backend": distance_backend,
                 "distance_normalization": distance_normalization,
                 "max_distance_cutoff": np.nan if cutoff is None else cutoff,
                 "max_rank_pct": np.nan if max_rank_pct is None else max_rank_pct,
@@ -645,14 +734,15 @@ class Conformal:
 
         lower_bounds = np.append(self.bounds_past_lower, current_lower)
         upper_bounds = np.append(self.bounds_past, current_upper)
-        distances = self.signature_distance_fast(
+        raw_distances = self.signature_distance(
             candidate_scores,
             score_t,
             lower_bounds,
             upper_bounds,
+            distance_backend=distance_backend,
         )
         distances = self.normalize_weighted_express_distances(
-            distances,
+            raw_distances,
             distance_normalization,
             history_length=len(lower_bounds),
         )
@@ -673,6 +763,7 @@ class Conformal:
 
         diagnostics = {
             "lambda": lambda_,
+            "distance_backend": distance_backend,
             "distance_normalization": distance_normalization,
             "max_distance_cutoff": np.nan if cutoff is None else float(cutoff),
             "max_rank_pct": np.nan if max_rank_pct is None else float(max_rank_pct),
@@ -789,6 +880,7 @@ class Conformal:
         weighted_express_max_distance=None,
         weighted_express_max_rank_pct=0.05,
         weighted_express_debug=False,
+        express_distance="endpoint",
     ):
         if strategy == "FULL":
             scores_cal = self.full()
@@ -813,6 +905,7 @@ class Conformal:
                 score_t,
                 current_bounds,
                 target_size=target_size,
+                distance_backend=express_distance,
             )
         elif strategy == "K-EXPRESS":
             scores_cal = self.k_express(score_t, k, current_bounds)
@@ -824,6 +917,7 @@ class Conformal:
                 distance_normalization=weighted_express_distance_normalization,
                 max_distance=weighted_express_max_distance,
                 max_rank_pct=weighted_express_max_rank_pct,
+                distance_backend=express_distance,
                 debug=weighted_express_debug,
             )
             covered = np.abs(y_t - point_prediction_t) <= buffer
@@ -834,6 +928,10 @@ class Conformal:
                 "interval_length": self.interval_length_from_threshold(buffer),
                 "buffer": buffer,
                 "weighted_express_lambda": diagnostics.get("lambda", np.nan),
+                "weighted_express_distance_backend": diagnostics.get(
+                    "distance_backend",
+                    np.nan,
+                ),
                 "weighted_express_distance_normalization": diagnostics.get(
                     "distance_normalization",
                     np.nan,
@@ -910,6 +1008,7 @@ class Conformal:
                 "relaxed_express_exact_matches": diagnostics.get("exact_matches", np.nan),
                 "relaxed_express_chosen_size": diagnostics.get("chosen_size", np.nan),
                 "relaxed_express_target_size": diagnostics.get("target_size", np.nan),
+                "relaxed_express_distance_backend": diagnostics.get("distance_backend", np.nan),
                 "relaxed_express_max_distance": diagnostics.get("max_distance", np.nan),
                 "relaxed_express_mean_distance": diagnostics.get("mean_distance", np.nan),
                 "relaxed_express_relaxation_needed": diagnostics.get("relaxation_needed", np.nan),
