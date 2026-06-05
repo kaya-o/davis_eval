@@ -44,7 +44,9 @@ DEFAULT_CONFIG = {
         "relaxed_express_target_size": None,
         "relaxed_express_rank_delta": None,
         "weighted_express_lambda": 1.0,
-        "weighted_express_distance_normalization": "history_length",
+        "weighted_express_distance_normalization": "rank",
+        "weighted_express_max_distance": None,
+        "weighted_express_max_rank_pct": 0.05,
         "weighted_express_debug": False,
     },
     "strategies": DEFAULT_STRATEGIES,
@@ -175,8 +177,14 @@ def run_experiment(config, config_path=None, output_root=DEFAULT_RESULTS_ROOT, r
     weighted_express_lambda = float(conformal_config.get("weighted_express_lambda", 1.0))
     weighted_express_distance_normalization = conformal_config.get(
         "weighted_express_distance_normalization",
-        "history_length",
+        "rank",
     )
+    weighted_express_max_distance = conformal_config.get("weighted_express_max_distance")
+    if weighted_express_max_distance is not None:
+        weighted_express_max_distance = float(weighted_express_max_distance)
+    weighted_express_max_rank_pct = conformal_config.get("weighted_express_max_rank_pct", 0.05)
+    if weighted_express_max_rank_pct is not None:
+        weighted_express_max_rank_pct = float(weighted_express_max_rank_pct)
     weighted_express_debug = bool(conformal_config.get("weighted_express_debug", False))
 
     results = {
@@ -254,6 +262,8 @@ def run_experiment(config, config_path=None, output_root=DEFAULT_RESULTS_ROOT, r
                         weighted_express_distance_normalization=(
                             weighted_express_distance_normalization
                         ),
+                        weighted_express_max_distance=weighted_express_max_distance,
+                        weighted_express_max_rank_pct=weighted_express_max_rank_pct,
                         weighted_express_debug=weighted_express_debug,
                     )
 
@@ -301,6 +311,24 @@ def run_experiment(config, config_path=None, output_root=DEFAULT_RESULTS_ROOT, r
                         "weighted_express_distance_normalization": strategy_result.get(
                             "weighted_express_distance_normalization"
                         ),
+                        "weighted_express_max_distance_cutoff": strategy_result.get(
+                            "weighted_express_max_distance_cutoff"
+                        ),
+                        "weighted_express_max_rank_pct": strategy_result.get(
+                            "weighted_express_max_rank_pct"
+                        ),
+                        "weighted_express_n_candidates_total": strategy_result.get(
+                            "weighted_express_n_candidates_total"
+                        ),
+                        "weighted_express_n_positive_weights": strategy_result.get(
+                            "weighted_express_n_positive_weights"
+                        ),
+                        "weighted_express_positive_weight_fraction": strategy_result.get(
+                            "weighted_express_positive_weight_fraction"
+                        ),
+                        "weighted_express_sum_positive_weights": strategy_result.get(
+                            "weighted_express_sum_positive_weights"
+                        ),
                         "weighted_express_sum_raw_weights": strategy_result.get(
                             "weighted_express_sum_raw_weights"
                         ),
@@ -337,6 +365,9 @@ def run_experiment(config, config_path=None, output_root=DEFAULT_RESULTS_ROOT, r
                         "weighted_express_n_eff": strategy_result.get(
                             "weighted_express_n_eff"
                         ),
+                        "weighted_express_n_eff_finite": strategy_result.get(
+                            "weighted_express_n_eff_finite"
+                        ),
                         "weighted_express_weighted_mean_distance": strategy_result.get(
                             "weighted_express_weighted_mean_distance"
                         ),
@@ -372,6 +403,9 @@ def run_experiment(config, config_path=None, output_root=DEFAULT_RESULTS_ROOT, r
             print("WEIGHTED-EXPRESS diagnostics:")
             for key in [
                 "weighted_express_sum_raw_weights",
+                "weighted_express_n_candidates_total",
+                "weighted_express_n_positive_weights",
+                "weighted_express_positive_weight_fraction",
                 "weighted_express_finite_mass",
                 "weighted_express_test_mass",
                 "weighted_express_median_distance",
@@ -379,6 +413,7 @@ def run_experiment(config, config_path=None, output_root=DEFAULT_RESULTS_ROOT, r
                 "weighted_express_median_weight",
                 "weighted_express_mean_weight",
                 "weighted_express_n_eff",
+                "weighted_express_n_eff_finite",
             ]:
                 values = np.asarray([
                     row[key]

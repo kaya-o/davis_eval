@@ -12,7 +12,7 @@
     "score_column": "muhat_2",
     "tau_1": 5.0,
     "tau_0": 4000,
-    "window_width": 0.5,
+    "window_width": 0.1,
     "tau_tail": 6.25
   },
   "prediction": {
@@ -22,19 +22,15 @@
     "alpha": 0.4,
     "randomized_calibration": true,
     "k_express": 7500,
-    "weighted_express_lambda": 10.0,
-    "weighted_express_distance_normalization": "history_length",
-    "weighted_express_debug": false
+    "weighted_express_lambda": 1.0,
+    "weighted_express_distance_normalization": "rank",
+    "weighted_express_max_distance": null,
+    "weighted_express_max_rank_pct": 0.1,
+    "weighted_express_debug": true
   },
   "strategies": [
-    "FULL",
-    "S-FULL",
-    "S-FIX",
-    "ADA",
     "EXPRESS",
     "RELAXED-EXPRESS",
-    "WEIGHTED-EXPRESS",
-    "K-EXPRESS",
-    "EXPRESS-M"
+    "WEIGHTED-EXPRESS"
   ]
 }

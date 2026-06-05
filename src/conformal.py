@@ -101,6 +101,12 @@ def dump_experiment_results(
 
         "weighted_express_lambda",
         "weighted_express_distance_normalization",
+        "weighted_express_max_distance_cutoff",
+        "weighted_express_max_rank_pct",
+        "weighted_express_n_candidates_total",
+        "weighted_express_n_positive_weights",
+        "weighted_express_positive_weight_fraction",
+        "weighted_express_sum_positive_weights",
         "weighted_express_sum_raw_weights",
         "weighted_express_finite_mass",
         "weighted_express_test_mass",
@@ -113,6 +119,7 @@ def dump_experiment_results(
         "weighted_express_mean_weight",
         "weighted_express_max_weight",
         "weighted_express_n_eff",
+        "weighted_express_n_eff_finite",
         "weighted_express_weighted_mean_distance",
         "weighted_express_infinite",
     ]
@@ -384,10 +391,19 @@ class Conformal:
             return distances
         if normalization == "history_length":
             return distances / max(int(history_length), 1)
+        if normalization == "rank":
+            if len(distances) == 0:
+                return distances
+            unique_values = np.unique(distances)
+            if len(unique_values) == 1:
+                return np.zeros(len(distances), dtype=float)
+            level_lookup = {value: rank for rank, value in enumerate(unique_values)}
+            ranks = np.asarray([level_lookup[value] for value in distances], dtype=float)
+            return ranks / (len(unique_values) - 1)
 
         raise ValueError(
             "weighted_express_distance_normalization must be one of "
-            f"['history_length', 'none'], got {normalization!r}"
+            f"['rank', 'history_length', 'none'], got {normalization!r}"
         )
 
     def interval_length_from_threshold(self, threshold):
@@ -562,20 +578,31 @@ class Conformal:
         score_t,
         current_bounds,
         lambda_=1.0,
-        distance_normalization="history_length",
+        distance_normalization="rank",
+        max_distance=None,
+        max_rank_pct=0.05,
         debug=False,
     ):
         """
-        Empirical soft relaxation of EXPRESS inspired by weighted conformal
-        prediction for nonexchangeable data.
+        Empirical compact-support soft relaxation of EXPRESS.
 
-        Weights depend on the current EXPRESS signature distance, so this is
-        not a direct instantiation of a fixed-weight validity theorem.
+        This is inspired by weighted nonexchangeable conformal prediction, but
+        the weights depend on the current EXPRESS signature distance. It is not
+        a direct instantiation of a fixed-weight validity theorem.
         """
         del debug
         lambda_ = float(lambda_)
         if lambda_ < 0:
             raise ValueError(f"weighted_express_lambda must be nonnegative, got {lambda_}")
+        if max_rank_pct is not None:
+            max_rank_pct = float(max_rank_pct)
+            if max_rank_pct < 0 or max_rank_pct > 1:
+                raise ValueError(
+                    f"weighted_express_max_rank_pct must be in [0, 1], got {max_rank_pct}"
+                )
+        if max_distance is not None:
+            max_distance = float(max_distance)
+        cutoff = max_rank_pct if distance_normalization == "rank" else max_distance
 
         current_lower, current_upper = current_bounds
         candidate_residuals = np.concatenate([
@@ -591,6 +618,12 @@ class Conformal:
             diagnostics = {
                 "lambda": lambda_,
                 "distance_normalization": distance_normalization,
+                "max_distance_cutoff": np.nan if cutoff is None else cutoff,
+                "max_rank_pct": np.nan if max_rank_pct is None else max_rank_pct,
+                "n_candidates_total": 0,
+                "n_positive_weights": 0,
+                "positive_weight_fraction": 0.0,
+                "sum_positive_weights": 0.0,
                 "sum_raw_weights": 0.0,
                 "finite_mass": 0.0,
                 "test_mass": 1.0,
@@ -603,6 +636,7 @@ class Conformal:
                 "mean_weight": np.nan,
                 "max_weight": np.nan,
                 "n_eff": 0.0,
+                "n_eff_finite": 0.0,
                 "weighted_mean_distance": np.nan,
                 "infinite": True,
             }
@@ -624,17 +658,28 @@ class Conformal:
         )
 
         raw_weights = np.exp(-lambda_ * distances)
+        if cutoff is not None:
+            raw_weights[distances > cutoff] = 0.0
         buffer = self.weighted_quantile_threshold(candidate_residuals, raw_weights)
 
+        positive_weights = raw_weights > 0
+        n_positive_weights = int(np.sum(positive_weights))
         sum_raw_weights = float(np.sum(raw_weights))
         denom = 1.0 + sum_raw_weights
         normalized_weights = raw_weights / denom
         finite_weight_sum = float(np.sum(normalized_weights))
         weight_square_sum = float(np.sum(normalized_weights ** 2))
+        weight_square_sum_raw = float(np.sum(raw_weights ** 2))
 
         diagnostics = {
             "lambda": lambda_,
             "distance_normalization": distance_normalization,
+            "max_distance_cutoff": np.nan if cutoff is None else float(cutoff),
+            "max_rank_pct": np.nan if max_rank_pct is None else float(max_rank_pct),
+            "n_candidates_total": int(len(candidate_residuals)),
+            "n_positive_weights": n_positive_weights,
+            "positive_weight_fraction": float(n_positive_weights / len(raw_weights)),
+            "sum_positive_weights": float(np.sum(raw_weights[positive_weights])),
             "sum_raw_weights": sum_raw_weights,
             "finite_mass": float(sum_raw_weights / denom),
             "test_mass": float(1.0 / denom),
@@ -647,6 +692,11 @@ class Conformal:
             "mean_weight": float(np.mean(raw_weights)),
             "max_weight": float(np.max(raw_weights)),
             "n_eff": float(1.0 / weight_square_sum) if weight_square_sum > 0 else 0.0,
+            "n_eff_finite": (
+                float((sum_raw_weights ** 2) / weight_square_sum_raw)
+                if sum_raw_weights > 0 and weight_square_sum_raw > 0
+                else 0.0
+            ),
             "weighted_mean_distance": (
                 float(np.sum(normalized_weights * distances) / finite_weight_sum)
                 if finite_weight_sum > 0
@@ -655,7 +705,7 @@ class Conformal:
             "infinite": bool(np.isinf(buffer)),
         }
         self._weighted_express_last_diagnostics = diagnostics
-        return buffer, len(candidate_residuals), diagnostics
+        return buffer, n_positive_weights, diagnostics
     
     def k_express(self, score_t, k, current_bounds):
         current_lower, current_upper = current_bounds
@@ -735,7 +785,9 @@ class Conformal:
         relaxed_express_target_size=None,
         relaxed_express_rank_delta=None,
         weighted_express_lambda=1.0,
-        weighted_express_distance_normalization="history_length",
+        weighted_express_distance_normalization="rank",
+        weighted_express_max_distance=None,
+        weighted_express_max_rank_pct=0.05,
         weighted_express_debug=False,
     ):
         if strategy == "FULL":
@@ -770,6 +822,8 @@ class Conformal:
                 current_bounds,
                 lambda_=weighted_express_lambda,
                 distance_normalization=weighted_express_distance_normalization,
+                max_distance=weighted_express_max_distance,
+                max_rank_pct=weighted_express_max_rank_pct,
                 debug=weighted_express_debug,
             )
             covered = np.abs(y_t - point_prediction_t) <= buffer
@@ -782,6 +836,27 @@ class Conformal:
                 "weighted_express_lambda": diagnostics.get("lambda", np.nan),
                 "weighted_express_distance_normalization": diagnostics.get(
                     "distance_normalization",
+                    np.nan,
+                ),
+                "weighted_express_max_distance_cutoff": diagnostics.get(
+                    "max_distance_cutoff",
+                    np.nan,
+                ),
+                "weighted_express_max_rank_pct": diagnostics.get("max_rank_pct", np.nan),
+                "weighted_express_n_candidates_total": diagnostics.get(
+                    "n_candidates_total",
+                    np.nan,
+                ),
+                "weighted_express_n_positive_weights": diagnostics.get(
+                    "n_positive_weights",
+                    np.nan,
+                ),
+                "weighted_express_positive_weight_fraction": diagnostics.get(
+                    "positive_weight_fraction",
+                    np.nan,
+                ),
+                "weighted_express_sum_positive_weights": diagnostics.get(
+                    "sum_positive_weights",
                     np.nan,
                 ),
                 "weighted_express_sum_raw_weights": diagnostics.get("sum_raw_weights", np.nan),
@@ -799,6 +874,7 @@ class Conformal:
                 "weighted_express_mean_weight": diagnostics.get("mean_weight", np.nan),
                 "weighted_express_max_weight": diagnostics.get("max_weight", np.nan),
                 "weighted_express_n_eff": diagnostics.get("n_eff", np.nan),
+                "weighted_express_n_eff_finite": diagnostics.get("n_eff_finite", np.nan),
                 "weighted_express_weighted_mean_distance": diagnostics.get(
                     "weighted_mean_distance",
                     np.nan,
