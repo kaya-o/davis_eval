@@ -1,5 +1,5 @@
 {
-  "experiment_name": "davis_muhat2_moving_window",
+  "experiment_name": "weighted_expr_window_sweep",
   "n_runs": 100,
   "seed": 42,
   "data": {
@@ -12,7 +12,7 @@
     "score_column": "muhat_2",
     "tau_1": 5.0,
     "tau_0": 4000,
-    "window_width": 0.5,
+    "window_width": 0.25,
     "tau_tail": 6.25
   },
   "prediction": {
@@ -37,6 +37,7 @@
     "EXPRESS",
     "RELAXED-EXPRESS",
     "K-EXPRESS",
+    "WEIGHTED-EXPRESS",
     "EXPRESS-M"
   ]
 }

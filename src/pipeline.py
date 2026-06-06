@@ -385,6 +385,9 @@ def run_experiment(config, config_path=None, output_root=DEFAULT_RESULTS_ROOT, r
                         "weighted_express_weighted_mean_distance": strategy_result.get(
                             "weighted_express_weighted_mean_distance"
                         ),
+                        "weighted_express_stress": strategy_result.get(
+                            "weighted_express_stress"
+                        ),
                         "weighted_express_infinite": strategy_result.get(
                             "weighted_express_infinite"
                         ),
@@ -428,6 +431,7 @@ def run_experiment(config, config_path=None, output_root=DEFAULT_RESULTS_ROOT, r
                 "weighted_express_mean_weight",
                 "weighted_express_n_eff",
                 "weighted_express_n_eff_finite",
+                "weighted_express_stress",
             ]:
                 values = np.asarray([
                     row[key]

@@ -123,6 +123,7 @@ def dump_experiment_results(
         "weighted_express_n_eff",
         "weighted_express_n_eff_finite",
         "weighted_express_weighted_mean_distance",
+        "weighted_express_stress",
         "weighted_express_infinite",
     ]
 
@@ -727,6 +728,7 @@ class Conformal:
                 "n_eff": 0.0,
                 "n_eff_finite": 0.0,
                 "weighted_mean_distance": np.nan,
+                "stress": 0.0,
                 "infinite": True,
             }
             self._weighted_express_last_diagnostics = diagnostics
@@ -793,6 +795,7 @@ class Conformal:
                 if finite_weight_sum > 0
                 else np.nan
             ),
+            "stress": float(np.sum(normalized_weights * distances)),
             "infinite": bool(np.isinf(buffer)),
         }
         self._weighted_express_last_diagnostics = diagnostics
@@ -977,6 +980,7 @@ class Conformal:
                     "weighted_mean_distance",
                     np.nan,
                 ),
+                "weighted_express_stress": diagnostics.get("stress", np.nan),
                 "weighted_express_infinite": diagnostics.get("infinite", np.nan),
             }
         elif strategy == "EXPRESS-M":
