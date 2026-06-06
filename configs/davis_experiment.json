@@ -1,5 +1,5 @@
 {
-  "experiment_name": "weighted_expr_window_sweep",
+  "experiment_name": "weighted_expr_max_dist_sweep",
   "n_runs": 100,
   "seed": 42,
   "data": {
@@ -24,20 +24,20 @@
     "k_express": 7500,
     "express_distance": "hamming",
     "weighted_express_lambda": 1.0,
-    "weighted_express_distance_normalization": "rank",
-    "weighted_express_max_distance": null,
-    "weighted_express_max_rank_pct": 0.1,
-    "weighted_express_debug": true
+    "weighted_express_distance_normalization": "history_length",
+    "weighted_express_max_distance": 1,
+    "weighted_express_max_rank_pct": null,
+    "weighted_express_debug": false,
+    "weighted_neighborhood_express_lambda": 1.0,
+    "weighted_neighborhood_express_distance_normalization": "rank",
+    "weighted_neighborhood_express_max_distance": null,
+    "weighted_neighborhood_express_max_rank_pct": 0.2,
+    "weighted_neighborhood_express_max_neighbors": 200,
+    "weighted_neighborhood_express_debug": false
   },
   "strategies": [
-    "FULL",
-    "S-FULL",
-    "S-FIX",
-    "ADA",
     "EXPRESS",
     "RELAXED-EXPRESS",
-    "K-EXPRESS",
-    "WEIGHTED-EXPRESS",
-    "EXPRESS-M"
+    "WEIGHTED-EXPRESS"
   ]
 }

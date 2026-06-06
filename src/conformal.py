@@ -125,6 +125,36 @@ def dump_experiment_results(
         "weighted_express_weighted_mean_distance",
         "weighted_express_stress",
         "weighted_express_infinite",
+
+        "weighted_neighborhood_express_lambda",
+        "weighted_neighborhood_express_distance_backend",
+        "weighted_neighborhood_express_distance_normalization",
+        "weighted_neighborhood_express_max_distance_cutoff",
+        "weighted_neighborhood_express_max_rank_pct",
+        "weighted_neighborhood_express_max_neighbors",
+        "weighted_neighborhood_express_n_candidates_total",
+        "weighted_neighborhood_express_n_after_neighbor_cap",
+        "weighted_neighborhood_express_neighbor_cap_active",
+        "weighted_neighborhood_express_neighbor_cap_boundary_distance",
+        "weighted_neighborhood_express_n_positive_weights",
+        "weighted_neighborhood_express_positive_weight_fraction",
+        "weighted_neighborhood_express_sum_positive_weights",
+        "weighted_neighborhood_express_sum_raw_weights",
+        "weighted_neighborhood_express_finite_mass",
+        "weighted_neighborhood_express_test_mass",
+        "weighted_neighborhood_express_min_distance",
+        "weighted_neighborhood_express_median_distance",
+        "weighted_neighborhood_express_mean_distance",
+        "weighted_neighborhood_express_max_distance",
+        "weighted_neighborhood_express_min_weight",
+        "weighted_neighborhood_express_median_weight",
+        "weighted_neighborhood_express_mean_weight",
+        "weighted_neighborhood_express_max_weight",
+        "weighted_neighborhood_express_n_eff",
+        "weighted_neighborhood_express_n_eff_finite",
+        "weighted_neighborhood_express_weighted_mean_distance",
+        "weighted_neighborhood_express_stress",
+        "weighted_neighborhood_express_infinite",
     ]
 
     with raw_path.open("w", newline="") as f:
@@ -193,6 +223,7 @@ class Conformal:
         self._express_cache_value = None
         self._relaxed_express_last_diagnostics = None
         self._weighted_express_last_diagnostics = None
+        self._weighted_neighborhood_express_last_diagnostics = None
 
     def selected_count(self, j=None):
         past = self.s_past if j is None else self.s_past[:j]
@@ -661,7 +692,40 @@ class Conformal:
 
         return candidate_residuals[chosen_idx]
 
-    def weighted_express(
+    def choose_nearest_indices_by_distance(self, distances, max_neighbors, rng=None):
+        rng = self.rng if rng is None else rng
+        distances = np.asarray(distances)
+        n = len(distances)
+
+        if max_neighbors is None or max_neighbors >= n:
+            return np.arange(n, dtype=int), np.nan, False
+
+        max_neighbors = int(max_neighbors)
+        if max_neighbors <= 0:
+            raise ValueError("max_neighbors must be positive or None")
+
+        boundary_distance = np.partition(distances, max_neighbors - 1)[max_neighbors - 1]
+
+        strict_idx = np.flatnonzero(distances < boundary_distance)
+        boundary_idx = np.flatnonzero(distances == boundary_distance)
+
+        remaining = max_neighbors - len(strict_idx)
+
+        if remaining <= 0:
+            sampled_boundary_idx = np.array([], dtype=int)
+        elif remaining >= len(boundary_idx):
+            sampled_boundary_idx = boundary_idx
+        else:
+            sampled_boundary_idx = rng.choice(
+                boundary_idx,
+                size=remaining,
+                replace=False,
+            )
+
+        chosen_idx = np.concatenate([strict_idx, sampled_boundary_idx])
+        return chosen_idx, boundary_distance, True
+
+    def weighted_express_core(
         self,
         score_t,
         current_bounds,
@@ -669,6 +733,7 @@ class Conformal:
         distance_normalization="rank",
         max_distance=None,
         max_rank_pct=0.05,
+        max_neighbors=None,
         distance_backend="endpoint",
         debug=False,
     ):
@@ -683,6 +748,10 @@ class Conformal:
         lambda_ = float(lambda_)
         if lambda_ < 0:
             raise ValueError(f"weighted_express_lambda must be nonnegative, got {lambda_}")
+        if max_neighbors is not None:
+            max_neighbors = int(max_neighbors)
+            if max_neighbors <= 0:
+                raise ValueError("max_neighbors must be positive or None")
         if max_rank_pct is not None:
             max_rank_pct = float(max_rank_pct)
             if max_rank_pct < 0 or max_rank_pct > 1:
@@ -702,6 +771,7 @@ class Conformal:
             self.scores_off,
             self.scores_past,
         ])
+        n_candidates_total = int(len(candidate_residuals))
 
         if len(candidate_residuals) == 0:
             diagnostics = {
@@ -710,7 +780,11 @@ class Conformal:
                 "distance_normalization": distance_normalization,
                 "max_distance_cutoff": np.nan if cutoff is None else cutoff,
                 "max_rank_pct": np.nan if max_rank_pct is None else max_rank_pct,
-                "n_candidates_total": 0,
+                "max_neighbors": np.nan if max_neighbors is None else max_neighbors,
+                "n_candidates_total": n_candidates_total,
+                "n_after_neighbor_cap": 0,
+                "neighbor_cap_active": False,
+                "neighbor_cap_boundary_distance": np.nan,
                 "n_positive_weights": 0,
                 "positive_weight_fraction": 0.0,
                 "sum_positive_weights": 0.0,
@@ -731,7 +805,6 @@ class Conformal:
                 "stress": 0.0,
                 "infinite": True,
             }
-            self._weighted_express_last_diagnostics = diagnostics
             return np.inf, 0, diagnostics
 
         lower_bounds = np.append(self.bounds_past_lower, current_lower)
@@ -743,6 +816,24 @@ class Conformal:
             upper_bounds,
             distance_backend=distance_backend,
         )
+
+        # WEIGHTED-NEIGHBORHOOD-EXPRESS is a local-neighborhood variant of
+        # Weighted EXPRESS. It is intended for regimes where the signature
+        # distance becomes coarse and many candidates have low or zero distance.
+        # The max-neighbor cap prevents the weighted quantile from being flooded
+        # by too many low-distance candidates, while preserving the
+        # interpretation as a local weighted empirical residual distribution in
+        # signature space. This is an empirical relaxation and does not restore a
+        # finite-sample coverage guarantee.
+        chosen_idx, boundary_distance, cap_active = self.choose_nearest_indices_by_distance(
+            raw_distances,
+            max_neighbors,
+        )
+        candidate_residuals = candidate_residuals[chosen_idx]
+        candidate_scores = candidate_scores[chosen_idx]
+        raw_distances = raw_distances[chosen_idx]
+        del candidate_scores
+
         distances = self.normalize_weighted_express_distances(
             raw_distances,
             distance_normalization,
@@ -769,7 +860,13 @@ class Conformal:
             "distance_normalization": distance_normalization,
             "max_distance_cutoff": np.nan if cutoff is None else float(cutoff),
             "max_rank_pct": np.nan if max_rank_pct is None else float(max_rank_pct),
-            "n_candidates_total": int(len(candidate_residuals)),
+            "max_neighbors": np.nan if max_neighbors is None else max_neighbors,
+            "n_candidates_total": n_candidates_total,
+            "n_after_neighbor_cap": int(len(candidate_residuals)),
+            "neighbor_cap_active": bool(cap_active),
+            "neighbor_cap_boundary_distance": (
+                float(boundary_distance) if cap_active else np.nan
+            ),
             "n_positive_weights": n_positive_weights,
             "positive_weight_fraction": float(n_positive_weights / len(raw_weights)),
             "sum_positive_weights": float(np.sum(raw_weights[positive_weights])),
@@ -798,7 +895,57 @@ class Conformal:
             "stress": float(np.sum(normalized_weights * distances)),
             "infinite": bool(np.isinf(buffer)),
         }
+        return buffer, n_positive_weights, diagnostics
+
+    def weighted_express(
+        self,
+        score_t,
+        current_bounds,
+        lambda_=1.0,
+        distance_normalization="rank",
+        max_distance=None,
+        max_rank_pct=0.05,
+        distance_backend="endpoint",
+        debug=False,
+    ):
+        buffer, n_positive_weights, diagnostics = self.weighted_express_core(
+            score_t,
+            current_bounds,
+            lambda_=lambda_,
+            distance_normalization=distance_normalization,
+            max_distance=max_distance,
+            max_rank_pct=max_rank_pct,
+            max_neighbors=None,
+            distance_backend=distance_backend,
+            debug=debug,
+        )
         self._weighted_express_last_diagnostics = diagnostics
+        return buffer, n_positive_weights, diagnostics
+
+    def weighted_neighborhood_express(
+        self,
+        score_t,
+        current_bounds,
+        lambda_=1.0,
+        distance_normalization="rank",
+        max_distance=None,
+        max_rank_pct=0.05,
+        max_neighbors=200,
+        distance_backend="endpoint",
+        debug=False,
+    ):
+        buffer, n_positive_weights, diagnostics = self.weighted_express_core(
+            score_t,
+            current_bounds,
+            lambda_=lambda_,
+            distance_normalization=distance_normalization,
+            max_distance=max_distance,
+            max_rank_pct=max_rank_pct,
+            max_neighbors=max_neighbors,
+            distance_backend=distance_backend,
+            debug=debug,
+        )
+        self._weighted_neighborhood_express_last_diagnostics = diagnostics
         return buffer, n_positive_weights, diagnostics
     
     def k_express(self, score_t, k, current_bounds):
@@ -883,6 +1030,12 @@ class Conformal:
         weighted_express_max_distance=None,
         weighted_express_max_rank_pct=0.05,
         weighted_express_debug=False,
+        weighted_neighborhood_express_lambda=1.0,
+        weighted_neighborhood_express_distance_normalization="rank",
+        weighted_neighborhood_express_max_distance=None,
+        weighted_neighborhood_express_max_rank_pct=0.05,
+        weighted_neighborhood_express_max_neighbors=200,
+        weighted_neighborhood_express_debug=False,
         express_distance="endpoint",
     ):
         if strategy == "FULL":
@@ -982,6 +1135,133 @@ class Conformal:
                 ),
                 "weighted_express_stress": diagnostics.get("stress", np.nan),
                 "weighted_express_infinite": diagnostics.get("infinite", np.nan),
+            }
+        elif strategy == "WEIGHTED-NEIGHBORHOOD-EXPRESS":
+            buffer, n_calibration, diagnostics = self.weighted_neighborhood_express(
+                score_t,
+                current_bounds,
+                lambda_=weighted_neighborhood_express_lambda,
+                distance_normalization=weighted_neighborhood_express_distance_normalization,
+                max_distance=weighted_neighborhood_express_max_distance,
+                max_rank_pct=weighted_neighborhood_express_max_rank_pct,
+                max_neighbors=weighted_neighborhood_express_max_neighbors,
+                distance_backend=express_distance,
+                debug=weighted_neighborhood_express_debug,
+            )
+            covered = np.abs(y_t - point_prediction_t) <= buffer
+
+            return {
+                "miscovered": not covered,
+                "n_calibration": n_calibration,
+                "interval_length": self.interval_length_from_threshold(buffer),
+                "buffer": buffer,
+                "weighted_neighborhood_express_lambda": diagnostics.get("lambda", np.nan),
+                "weighted_neighborhood_express_distance_backend": diagnostics.get(
+                    "distance_backend",
+                    np.nan,
+                ),
+                "weighted_neighborhood_express_distance_normalization": diagnostics.get(
+                    "distance_normalization",
+                    np.nan,
+                ),
+                "weighted_neighborhood_express_max_distance_cutoff": diagnostics.get(
+                    "max_distance_cutoff",
+                    np.nan,
+                ),
+                "weighted_neighborhood_express_max_rank_pct": diagnostics.get(
+                    "max_rank_pct",
+                    np.nan,
+                ),
+                "weighted_neighborhood_express_max_neighbors": diagnostics.get(
+                    "max_neighbors",
+                    np.nan,
+                ),
+                "weighted_neighborhood_express_n_candidates_total": diagnostics.get(
+                    "n_candidates_total",
+                    np.nan,
+                ),
+                "weighted_neighborhood_express_n_after_neighbor_cap": diagnostics.get(
+                    "n_after_neighbor_cap",
+                    np.nan,
+                ),
+                "weighted_neighborhood_express_neighbor_cap_active": diagnostics.get(
+                    "neighbor_cap_active",
+                    np.nan,
+                ),
+                "weighted_neighborhood_express_neighbor_cap_boundary_distance": diagnostics.get(
+                    "neighbor_cap_boundary_distance",
+                    np.nan,
+                ),
+                "weighted_neighborhood_express_n_positive_weights": diagnostics.get(
+                    "n_positive_weights",
+                    np.nan,
+                ),
+                "weighted_neighborhood_express_positive_weight_fraction": diagnostics.get(
+                    "positive_weight_fraction",
+                    np.nan,
+                ),
+                "weighted_neighborhood_express_sum_positive_weights": diagnostics.get(
+                    "sum_positive_weights",
+                    np.nan,
+                ),
+                "weighted_neighborhood_express_sum_raw_weights": diagnostics.get(
+                    "sum_raw_weights",
+                    np.nan,
+                ),
+                "weighted_neighborhood_express_finite_mass": diagnostics.get(
+                    "finite_mass",
+                    np.nan,
+                ),
+                "weighted_neighborhood_express_test_mass": diagnostics.get(
+                    "test_mass",
+                    np.nan,
+                ),
+                "weighted_neighborhood_express_min_distance": diagnostics.get(
+                    "min_distance",
+                    np.nan,
+                ),
+                "weighted_neighborhood_express_median_distance": diagnostics.get(
+                    "median_distance",
+                    np.nan,
+                ),
+                "weighted_neighborhood_express_mean_distance": diagnostics.get(
+                    "mean_distance",
+                    np.nan,
+                ),
+                "weighted_neighborhood_express_max_distance": diagnostics.get(
+                    "max_distance",
+                    np.nan,
+                ),
+                "weighted_neighborhood_express_min_weight": diagnostics.get(
+                    "min_weight",
+                    np.nan,
+                ),
+                "weighted_neighborhood_express_median_weight": diagnostics.get(
+                    "median_weight",
+                    np.nan,
+                ),
+                "weighted_neighborhood_express_mean_weight": diagnostics.get(
+                    "mean_weight",
+                    np.nan,
+                ),
+                "weighted_neighborhood_express_max_weight": diagnostics.get(
+                    "max_weight",
+                    np.nan,
+                ),
+                "weighted_neighborhood_express_n_eff": diagnostics.get("n_eff", np.nan),
+                "weighted_neighborhood_express_n_eff_finite": diagnostics.get(
+                    "n_eff_finite",
+                    np.nan,
+                ),
+                "weighted_neighborhood_express_weighted_mean_distance": diagnostics.get(
+                    "weighted_mean_distance",
+                    np.nan,
+                ),
+                "weighted_neighborhood_express_stress": diagnostics.get("stress", np.nan),
+                "weighted_neighborhood_express_infinite": diagnostics.get(
+                    "infinite",
+                    np.nan,
+                ),
             }
         elif strategy == "EXPRESS-M":
             buffer, n_calibration = self.express_m(score_t, k, current_bounds)

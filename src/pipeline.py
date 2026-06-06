@@ -49,6 +49,12 @@ DEFAULT_CONFIG = {
         "weighted_express_max_distance": None,
         "weighted_express_max_rank_pct": 0.05,
         "weighted_express_debug": False,
+        "weighted_neighborhood_express_lambda": 1.0,
+        "weighted_neighborhood_express_distance_normalization": "rank",
+        "weighted_neighborhood_express_max_distance": None,
+        "weighted_neighborhood_express_max_rank_pct": 0.05,
+        "weighted_neighborhood_express_max_neighbors": 200,
+        "weighted_neighborhood_express_debug": False,
     },
     "strategies": DEFAULT_STRATEGIES,
 }
@@ -193,6 +199,43 @@ def run_experiment(config, config_path=None, output_root=DEFAULT_RESULTS_ROOT, r
     if weighted_express_max_rank_pct is not None:
         weighted_express_max_rank_pct = float(weighted_express_max_rank_pct)
     weighted_express_debug = bool(conformal_config.get("weighted_express_debug", False))
+    weighted_neighborhood_express_lambda = float(
+        conformal_config.get("weighted_neighborhood_express_lambda", 1.0)
+    )
+    weighted_neighborhood_express_distance_normalization = conformal_config.get(
+        "weighted_neighborhood_express_distance_normalization",
+        "rank",
+    )
+    weighted_neighborhood_express_max_distance = conformal_config.get(
+        "weighted_neighborhood_express_max_distance"
+    )
+    if weighted_neighborhood_express_max_distance is not None:
+        weighted_neighborhood_express_max_distance = float(
+            weighted_neighborhood_express_max_distance
+        )
+    weighted_neighborhood_express_max_rank_pct = conformal_config.get(
+        "weighted_neighborhood_express_max_rank_pct",
+        0.05,
+    )
+    if weighted_neighborhood_express_max_rank_pct is not None:
+        weighted_neighborhood_express_max_rank_pct = float(
+            weighted_neighborhood_express_max_rank_pct
+        )
+    weighted_neighborhood_express_max_neighbors = conformal_config.get(
+        "weighted_neighborhood_express_max_neighbors",
+        200,
+    )
+    if weighted_neighborhood_express_max_neighbors is not None:
+        weighted_neighborhood_express_max_neighbors = int(
+            weighted_neighborhood_express_max_neighbors
+        )
+        if weighted_neighborhood_express_max_neighbors <= 0:
+            raise ValueError(
+                "weighted_neighborhood_express_max_neighbors must be positive or null"
+            )
+    weighted_neighborhood_express_debug = bool(
+        conformal_config.get("weighted_neighborhood_express_debug", False)
+    )
 
     results = {
         strategy: {
@@ -272,6 +315,24 @@ def run_experiment(config, config_path=None, output_root=DEFAULT_RESULTS_ROOT, r
                         weighted_express_max_distance=weighted_express_max_distance,
                         weighted_express_max_rank_pct=weighted_express_max_rank_pct,
                         weighted_express_debug=weighted_express_debug,
+                        weighted_neighborhood_express_lambda=(
+                            weighted_neighborhood_express_lambda
+                        ),
+                        weighted_neighborhood_express_distance_normalization=(
+                            weighted_neighborhood_express_distance_normalization
+                        ),
+                        weighted_neighborhood_express_max_distance=(
+                            weighted_neighborhood_express_max_distance
+                        ),
+                        weighted_neighborhood_express_max_rank_pct=(
+                            weighted_neighborhood_express_max_rank_pct
+                        ),
+                        weighted_neighborhood_express_max_neighbors=(
+                            weighted_neighborhood_express_max_neighbors
+                        ),
+                        weighted_neighborhood_express_debug=(
+                            weighted_neighborhood_express_debug
+                        ),
                         express_distance=express_distance,
                     )
 
@@ -391,6 +452,93 @@ def run_experiment(config, config_path=None, output_root=DEFAULT_RESULTS_ROOT, r
                         "weighted_express_infinite": strategy_result.get(
                             "weighted_express_infinite"
                         ),
+                        "weighted_neighborhood_express_lambda": strategy_result.get(
+                            "weighted_neighborhood_express_lambda"
+                        ),
+                        "weighted_neighborhood_express_distance_backend": strategy_result.get(
+                            "weighted_neighborhood_express_distance_backend"
+                        ),
+                        "weighted_neighborhood_express_distance_normalization": strategy_result.get(
+                            "weighted_neighborhood_express_distance_normalization"
+                        ),
+                        "weighted_neighborhood_express_max_distance_cutoff": strategy_result.get(
+                            "weighted_neighborhood_express_max_distance_cutoff"
+                        ),
+                        "weighted_neighborhood_express_max_rank_pct": strategy_result.get(
+                            "weighted_neighborhood_express_max_rank_pct"
+                        ),
+                        "weighted_neighborhood_express_max_neighbors": strategy_result.get(
+                            "weighted_neighborhood_express_max_neighbors"
+                        ),
+                        "weighted_neighborhood_express_n_candidates_total": strategy_result.get(
+                            "weighted_neighborhood_express_n_candidates_total"
+                        ),
+                        "weighted_neighborhood_express_n_after_neighbor_cap": strategy_result.get(
+                            "weighted_neighborhood_express_n_after_neighbor_cap"
+                        ),
+                        "weighted_neighborhood_express_neighbor_cap_active": strategy_result.get(
+                            "weighted_neighborhood_express_neighbor_cap_active"
+                        ),
+                        "weighted_neighborhood_express_neighbor_cap_boundary_distance": strategy_result.get(
+                            "weighted_neighborhood_express_neighbor_cap_boundary_distance"
+                        ),
+                        "weighted_neighborhood_express_n_positive_weights": strategy_result.get(
+                            "weighted_neighborhood_express_n_positive_weights"
+                        ),
+                        "weighted_neighborhood_express_positive_weight_fraction": strategy_result.get(
+                            "weighted_neighborhood_express_positive_weight_fraction"
+                        ),
+                        "weighted_neighborhood_express_sum_positive_weights": strategy_result.get(
+                            "weighted_neighborhood_express_sum_positive_weights"
+                        ),
+                        "weighted_neighborhood_express_sum_raw_weights": strategy_result.get(
+                            "weighted_neighborhood_express_sum_raw_weights"
+                        ),
+                        "weighted_neighborhood_express_finite_mass": strategy_result.get(
+                            "weighted_neighborhood_express_finite_mass"
+                        ),
+                        "weighted_neighborhood_express_test_mass": strategy_result.get(
+                            "weighted_neighborhood_express_test_mass"
+                        ),
+                        "weighted_neighborhood_express_min_distance": strategy_result.get(
+                            "weighted_neighborhood_express_min_distance"
+                        ),
+                        "weighted_neighborhood_express_median_distance": strategy_result.get(
+                            "weighted_neighborhood_express_median_distance"
+                        ),
+                        "weighted_neighborhood_express_mean_distance": strategy_result.get(
+                            "weighted_neighborhood_express_mean_distance"
+                        ),
+                        "weighted_neighborhood_express_max_distance": strategy_result.get(
+                            "weighted_neighborhood_express_max_distance"
+                        ),
+                        "weighted_neighborhood_express_min_weight": strategy_result.get(
+                            "weighted_neighborhood_express_min_weight"
+                        ),
+                        "weighted_neighborhood_express_median_weight": strategy_result.get(
+                            "weighted_neighborhood_express_median_weight"
+                        ),
+                        "weighted_neighborhood_express_mean_weight": strategy_result.get(
+                            "weighted_neighborhood_express_mean_weight"
+                        ),
+                        "weighted_neighborhood_express_max_weight": strategy_result.get(
+                            "weighted_neighborhood_express_max_weight"
+                        ),
+                        "weighted_neighborhood_express_n_eff": strategy_result.get(
+                            "weighted_neighborhood_express_n_eff"
+                        ),
+                        "weighted_neighborhood_express_n_eff_finite": strategy_result.get(
+                            "weighted_neighborhood_express_n_eff_finite"
+                        ),
+                        "weighted_neighborhood_express_weighted_mean_distance": strategy_result.get(
+                            "weighted_neighborhood_express_weighted_mean_distance"
+                        ),
+                        "weighted_neighborhood_express_stress": strategy_result.get(
+                            "weighted_neighborhood_express_stress"
+                        ),
+                        "weighted_neighborhood_express_infinite": strategy_result.get(
+                            "weighted_neighborhood_express_infinite"
+                        ),
                     })
             conformal.append_online_point(score_t, point_prediction_t, y_t, s_t, current_bounds)
         
@@ -436,6 +584,39 @@ def run_experiment(config, config_path=None, output_root=DEFAULT_RESULTS_ROOT, r
                 values = np.asarray([
                     row[key]
                     for row in weighted_rows
+                    if row.get(key) is not None and not pd.isna(row.get(key))
+                ], dtype=float)
+                if len(values) == 0:
+                    continue
+                print(
+                    f"  {key}: "
+                    f"median={np.median(values):.6g}, "
+                    f"mean={np.mean(values):.6g}, "
+                    f"min={np.min(values):.6g}, "
+                    f"max={np.max(values):.6g}"
+                )
+
+    if weighted_neighborhood_express_debug:
+        weighted_neighborhood_rows = [
+            row for row in raw_rows if row["strategy"] == "WEIGHTED-NEIGHBORHOOD-EXPRESS"
+        ]
+        if weighted_neighborhood_rows:
+            print("WEIGHTED-NEIGHBORHOOD-EXPRESS diagnostics:")
+            for key in [
+                "weighted_neighborhood_express_n_candidates_total",
+                "weighted_neighborhood_express_n_after_neighbor_cap",
+                "weighted_neighborhood_express_neighbor_cap_active",
+                "weighted_neighborhood_express_n_positive_weights",
+                "weighted_neighborhood_express_positive_weight_fraction",
+                "weighted_neighborhood_express_sum_raw_weights",
+                "weighted_neighborhood_express_finite_mass",
+                "weighted_neighborhood_express_test_mass",
+                "weighted_neighborhood_express_n_eff_finite",
+                "weighted_neighborhood_express_stress",
+            ]:
+                values = np.asarray([
+                    row[key]
+                    for row in weighted_neighborhood_rows
                     if row.get(key) is not None and not pd.isna(row.get(key))
                 ], dtype=float)
                 if len(values) == 0:
