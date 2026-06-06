@@ -24,6 +24,7 @@ STRATEGY_ORDER = [
     "ADA",
     "EXPRESS",
     "RELAXED-EXPRESS",
+    "WEIGHTED-EXPRESS",
     "EXPRESS-M",
     "K-EXPRESS",
 ]
@@ -32,8 +33,12 @@ METHOD_NOTES = {
     "ADA": "(Bao et al.)",
     "EXPRESS": "(Sale and Ramdas)",
     "RELAXED-EXPRESS": "(new)",
+    "WEIGHTED-EXPRESS": "(new)",
     "EXPRESS-M": "(Sale and Ramdas)",
     "K-EXPRESS": "(Sale and Ramdas)",
+}
+DEFAULT_STRATEGY_LABELS = {
+    "WEIGHTED-EXPRESS": "WEIGHTED-\nEXPRESS",
 }
 
 
@@ -69,13 +74,15 @@ def load_result_config(result_dir):
 
 
 def strategy_label_overrides_from_config(config):
+    labels = dict(DEFAULT_STRATEGY_LABELS)
     k_express = config.get("conformal", {}).get("k_express")
     if k_express is None:
-        return {}
+        return labels
 
     if isinstance(k_express, float) and k_express.is_integer():
         k_express = int(k_express)
-    return {"K-EXPRESS": f"{k_express}-EXPRESS"}
+    labels["K-EXPRESS"] = f"{k_express}-EXPRESS"
+    return labels
 
 
 def summarize_events(raw_df):

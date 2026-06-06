@@ -9,6 +9,7 @@ import pandas as pd
 
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
 RESULTS_DIR = PROJECT_ROOT / "results"
+DAVIS_DATA_PATH = PROJECT_ROOT / "data" / "davis_other_data_models.csv"
 
 
 def latest_results_dir(results_dir=RESULTS_DIR):
@@ -38,6 +39,11 @@ def prepare_selected_datapoints(csv_path, run=None):
     return df
 
 
+def davis_score_max(data_path=DAVIS_DATA_PATH, score_column="muhat_2"):
+    data = pd.read_csv(data_path, usecols=[score_column])
+    return float(data[score_column].max())
+
+
 def draw_selected_datapoints_panel(ax, df, title, interval_alpha=0.18, point_alpha=0.42):
     t = df["t"].to_numpy()
     score = df["score_t"].to_numpy()
@@ -65,7 +71,7 @@ def draw_selected_datapoints_panel(ax, df, title, interval_alpha=0.18, point_alp
     ax.grid(True, alpha=0.22)
 
 
-def plot_selected_datapoints(result_dir=None, output_path=None, run=None):
+def plot_selected_datapoints(result_dir=None, output_path=None, run=None, y_min=None, y_max=None):
     result_dir = latest_results_dir() if result_dir is None else Path(result_dir)
     csv_path = result_dir / "selected_datapoints.csv"
     if output_path is None:
@@ -82,7 +88,12 @@ def plot_selected_datapoints(result_dir=None, output_path=None, run=None):
     ax.set_xlabel("Time t")
     ax.set_ylabel("muhat2")
     ax.set_xlim(left=0, right=max(df["t"].max(), 1))
-    ax.set_ylim(bottom=max(0.0, min(df["selection_lower_bound"].min(), df["score_t"].min()) * 0.95))
+    computed_y_min = max(0.0, min(df["selection_lower_bound"].min(), df["score_t"].min()) * 0.95)
+    computed_y_max = max(df["selection_upper_bound"].max(), df["score_t"].max()) * 1.05
+    ax.set_ylim(
+        bottom=computed_y_min if y_min is None else y_min,
+        top=computed_y_max if y_max is None else y_max,
+    )
 
     handles = [
         plt.Line2D([0], [0], color="#f59e0b", lw=3, alpha=0.55),
@@ -97,7 +108,7 @@ def plot_selected_datapoints(result_dir=None, output_path=None, run=None):
     return output_path
 
 
-def plot_selected_datapoints_panels(result_dir=None, output_path=None, n_runs=8):
+def plot_selected_datapoints_panels(result_dir=None, output_path=None, n_runs=8, y_min=None, y_max=None):
     result_dir = latest_results_dir() if result_dir is None else Path(result_dir)
     csv_path = result_dir / "selected_datapoints.csv"
     if output_path is None:
@@ -121,8 +132,10 @@ def plot_selected_datapoints_panels(result_dir=None, output_path=None, n_runs=8)
     )
 
     panel_df = pd.concat([df[df["run"].isin(runs)], mean_df], ignore_index=True)
-    y_min = max(0.0, min(panel_df["selection_lower_bound"].min(), panel_df["score_t"].min()) * 0.95)
-    y_max = max(panel_df["selection_upper_bound"].max(), panel_df["score_t"].max()) * 1.05
+    computed_y_min = max(0.0, min(panel_df["selection_lower_bound"].min(), panel_df["score_t"].min()) * 0.95)
+    computed_y_max = max(panel_df["selection_upper_bound"].max(), panel_df["score_t"].max()) * 1.05
+    y_min = computed_y_min if y_min is None else y_min
+    y_max = computed_y_max if y_max is None else y_max
     x_max = max(df["t"].max(), 1)
 
     fig, axes = plt.subplots(3, 3, figsize=(15, 12), sharex=True, sharey=True)
@@ -170,19 +183,32 @@ def main():
     parser.add_argument("--run", type=int, default=None)
     parser.add_argument("--panels", action="store_true")
     parser.add_argument("--n-runs", type=int, default=8)
+    parser.add_argument("--y-min", type=float, default=None)
+    parser.add_argument("--y-max", type=float, default=None)
+    parser.add_argument(
+        "--y-max-from-davis",
+        action="store_true",
+        help="Set the y-axis maximum to max(muhat_2) in data/davis_other_data_models.csv.",
+    )
     args = parser.parse_args()
+
+    y_max = davis_score_max() if args.y_max_from_davis else args.y_max
 
     if args.panels:
         output_path = plot_selected_datapoints_panels(
             result_dir=args.result_dir,
             output_path=args.output,
             n_runs=args.n_runs,
+            y_min=args.y_min,
+            y_max=y_max,
         )
     else:
         output_path = plot_selected_datapoints(
             result_dir=args.result_dir,
             output_path=args.output,
             run=args.run,
+            y_min=args.y_min,
+            y_max=y_max,
         )
     print(f"Wrote selected datapoints plot to {output_path}")
 
