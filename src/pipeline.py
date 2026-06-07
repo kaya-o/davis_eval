@@ -43,6 +43,8 @@ DEFAULT_CONFIG = {
         "k_express": 7500,
         "relaxed_express_target_size": None,
         "relaxed_express_rank_delta": None,
+        "distance_express_max_distance": 0.02,
+        "distance_express_debug": False,
         "express_distance": "endpoint",
         "weighted_express_lambda": 1.0,
         "weighted_express_distance_normalization": "rank",
@@ -187,6 +189,15 @@ def run_experiment(config, config_path=None, output_root=DEFAULT_RESULTS_ROOT, r
             "conformal.express_distance must be one of ['endpoint', 'hamming'], "
             f"got {express_distance!r}"
         )
+    distance_express_max_distance = conformal_config.get(
+        "distance_express_max_distance",
+        0.02,
+    )
+    if distance_express_max_distance is not None:
+        distance_express_max_distance = float(distance_express_max_distance)
+        if distance_express_max_distance < 0 or distance_express_max_distance > 1:
+            raise ValueError("distance_express_max_distance must be in [0, 1]")
+    distance_express_debug = bool(conformal_config.get("distance_express_debug", False))
     weighted_express_lambda = float(conformal_config.get("weighted_express_lambda", 1.0))
     weighted_express_distance_normalization = conformal_config.get(
         "weighted_express_distance_normalization",
@@ -308,6 +319,8 @@ def run_experiment(config, config_path=None, output_root=DEFAULT_RESULTS_ROOT, r
                         k=k_express,
                         relaxed_express_target_size=relaxed_express_target_size,
                         relaxed_express_rank_delta=relaxed_express_rank_delta,
+                        distance_express_max_distance=distance_express_max_distance,
+                        distance_express_debug=distance_express_debug,
                         weighted_express_lambda=weighted_express_lambda,
                         weighted_express_distance_normalization=(
                             weighted_express_distance_normalization
@@ -376,6 +389,42 @@ def run_experiment(config, config_path=None, output_root=DEFAULT_RESULTS_ROOT, r
                         ),
                         "relaxed_express_added_nonexact": strategy_result.get(
                             "relaxed_express_added_nonexact"
+                        ),
+                        "distance_express_max_distance": strategy_result.get(
+                            "distance_express_max_distance"
+                        ),
+                        "distance_express_distance_backend": strategy_result.get(
+                            "distance_express_distance_backend"
+                        ),
+                        "distance_express_n_candidates_total": strategy_result.get(
+                            "distance_express_n_candidates_total"
+                        ),
+                        "distance_express_chosen_size": strategy_result.get(
+                            "distance_express_chosen_size"
+                        ),
+                        "distance_express_exact_matches": strategy_result.get(
+                            "distance_express_exact_matches"
+                        ),
+                        "distance_express_max_chosen_distance": strategy_result.get(
+                            "distance_express_max_chosen_distance"
+                        ),
+                        "distance_express_mean_chosen_distance": strategy_result.get(
+                            "distance_express_mean_chosen_distance"
+                        ),
+                        "distance_express_median_chosen_distance": strategy_result.get(
+                            "distance_express_median_chosen_distance"
+                        ),
+                        "distance_express_min_distance": strategy_result.get(
+                            "distance_express_min_distance"
+                        ),
+                        "distance_express_median_distance": strategy_result.get(
+                            "distance_express_median_distance"
+                        ),
+                        "distance_express_mean_distance": strategy_result.get(
+                            "distance_express_mean_distance"
+                        ),
+                        "distance_express_max_distance_observed": strategy_result.get(
+                            "distance_express_max_distance_observed"
                         ),
                         "weighted_express_lambda": strategy_result.get(
                             "weighted_express_lambda"
@@ -584,6 +633,32 @@ def run_experiment(config, config_path=None, output_root=DEFAULT_RESULTS_ROOT, r
                 values = np.asarray([
                     row[key]
                     for row in weighted_rows
+                    if row.get(key) is not None and not pd.isna(row.get(key))
+                ], dtype=float)
+                if len(values) == 0:
+                    continue
+                print(
+                    f"  {key}: "
+                    f"median={np.median(values):.6g}, "
+                    f"mean={np.mean(values):.6g}, "
+                    f"min={np.min(values):.6g}, "
+                    f"max={np.max(values):.6g}"
+                )
+
+    if distance_express_debug:
+        distance_rows = [row for row in raw_rows if row["strategy"] == "DISTANCE-EXPRESS"]
+        if distance_rows:
+            print("DISTANCE-EXPRESS diagnostics:")
+            for key in [
+                "distance_express_chosen_size",
+                "distance_express_exact_matches",
+                "distance_express_max_chosen_distance",
+                "distance_express_mean_chosen_distance",
+                "distance_express_median_chosen_distance",
+            ]:
+                values = np.asarray([
+                    row[key]
+                    for row in distance_rows
                     if row.get(key) is not None and not pd.isna(row.get(key))
                 ], dtype=float)
                 if len(values) == 0:

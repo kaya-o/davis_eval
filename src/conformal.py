@@ -100,6 +100,19 @@ def dump_experiment_results(
         "relaxed_express_relaxation_needed",
         "relaxed_express_added_nonexact",
 
+        "distance_express_max_distance",
+        "distance_express_distance_backend",
+        "distance_express_n_candidates_total",
+        "distance_express_chosen_size",
+        "distance_express_exact_matches",
+        "distance_express_max_chosen_distance",
+        "distance_express_mean_chosen_distance",
+        "distance_express_median_chosen_distance",
+        "distance_express_min_distance",
+        "distance_express_median_distance",
+        "distance_express_mean_distance",
+        "distance_express_max_distance_observed",
+
         "weighted_express_lambda",
         "weighted_express_distance_backend",
         "weighted_express_distance_normalization",
@@ -222,6 +235,7 @@ class Conformal:
         self._express_cache_key = None
         self._express_cache_value = None
         self._relaxed_express_last_diagnostics = None
+        self._distance_express_last_diagnostics = None
         self._weighted_express_last_diagnostics = None
         self._weighted_neighborhood_express_last_diagnostics = None
 
@@ -692,6 +706,102 @@ class Conformal:
 
         return candidate_residuals[chosen_idx]
 
+    def distance_express(
+        self,
+        score_t,
+        current_bounds,
+        max_distance=0.02,
+        distance_backend="hamming",
+        debug=False,
+    ):
+        """
+        DISTANCE-EXPRESS relaxes exact EXPRESS matching by replacing equality of
+        counterfactual selection signatures with a tolerance on normalized Hamming
+        disagreement. Unlike RELAXED-EXPRESS, it does not force the calibration set to
+        reach a target size; therefore infinite intervals remain possible when there are
+        too few sufficiently similar calibration points. This is an empirical relaxation
+        and does not inherit the exact EXPRESS finite-sample guarantee.
+        """
+        del debug
+
+        if max_distance is not None:
+            max_distance = float(max_distance)
+            if max_distance < 0 or max_distance > 1:
+                raise ValueError("distance_express_max_distance must be in [0, 1]")
+
+        current_lower, current_upper = current_bounds
+
+        candidate_residuals = np.concatenate([
+            self.residuals_off,
+            self.selected_residuals_past,
+        ])
+        candidate_scores = np.concatenate([
+            self.scores_off,
+            self.selected_scores_past,
+        ])
+
+        requested_max_distance = max_distance
+
+        if len(candidate_residuals) == 0:
+            self._distance_express_last_diagnostics = {
+                "max_distance": np.nan if requested_max_distance is None else requested_max_distance,
+                "distance_backend": distance_backend,
+                "n_candidates_total": 0,
+                "chosen_size": 0,
+                "exact_matches": 0,
+                "max_chosen_distance": np.nan,
+                "mean_chosen_distance": np.nan,
+                "median_chosen_distance": np.nan,
+                "min_distance": np.nan,
+                "median_distance": np.nan,
+                "mean_distance": np.nan,
+                "max_distance_observed": np.nan,
+            }
+            return candidate_residuals
+
+        lower_bounds = np.append(self.bounds_past_lower, current_lower)
+        upper_bounds = np.append(self.bounds_past, current_upper)
+
+        raw_distances = self.signature_distance(
+            candidate_scores,
+            score_t,
+            lower_bounds,
+            upper_bounds,
+            distance_backend=distance_backend,
+        )
+        normalized_distances = raw_distances / max(len(lower_bounds), 1)
+
+        if requested_max_distance is None:
+            selected_mask = np.ones(len(candidate_residuals), dtype=bool)
+        else:
+            selected_mask = normalized_distances <= requested_max_distance
+
+        selected_residuals = candidate_residuals[selected_mask]
+        chosen_distances = normalized_distances[selected_mask]
+
+        self._distance_express_last_diagnostics = {
+            "max_distance": np.nan if requested_max_distance is None else requested_max_distance,
+            "distance_backend": distance_backend,
+            "n_candidates_total": int(len(candidate_residuals)),
+            "chosen_size": int(len(selected_residuals)),
+            "exact_matches": int(np.sum(normalized_distances == 0)),
+            "max_chosen_distance": (
+                float(np.max(chosen_distances)) if len(chosen_distances) else np.nan
+            ),
+            "mean_chosen_distance": (
+                float(np.mean(chosen_distances)) if len(chosen_distances) else np.nan
+            ),
+            "median_chosen_distance": (
+                float(np.median(chosen_distances)) if len(chosen_distances) else np.nan
+            ),
+            "min_distance": float(np.min(normalized_distances)),
+            "median_distance": float(np.median(normalized_distances)),
+            "mean_distance": float(np.mean(normalized_distances)),
+            "max_distance_observed": float(np.max(normalized_distances)),
+        }
+
+        return selected_residuals
+
     def choose_nearest_indices_by_distance(self, distances, max_neighbors, rng=None):
         rng = self.rng if rng is None else rng
         distances = np.asarray(distances)
@@ -1025,6 +1135,8 @@ class Conformal:
         k=5,
         relaxed_express_target_size=None,
         relaxed_express_rank_delta=None,
+        distance_express_max_distance=0.02,
+        distance_express_debug=False,
         weighted_express_lambda=1.0,
         weighted_express_distance_normalization="rank",
         weighted_express_max_distance=None,
@@ -1062,6 +1174,14 @@ class Conformal:
                 current_bounds,
                 target_size=target_size,
                 distance_backend=express_distance,
+            )
+        elif strategy == "DISTANCE-EXPRESS":
+            scores_cal = self.distance_express(
+                score_t,
+                current_bounds,
+                max_distance=distance_express_max_distance,
+                distance_backend=express_distance,
+                debug=distance_express_debug,
             )
         elif strategy == "K-EXPRESS":
             scores_cal = self.k_express(score_t, k, current_bounds)
@@ -1297,6 +1417,44 @@ class Conformal:
                 "relaxed_express_mean_distance": diagnostics.get("mean_distance", np.nan),
                 "relaxed_express_relaxation_needed": diagnostics.get("relaxation_needed", np.nan),
                 "relaxed_express_added_nonexact": diagnostics.get("added_nonexact", np.nan),
+            })
+
+        if strategy == "DISTANCE-EXPRESS":
+            diagnostics = self._distance_express_last_diagnostics or {}
+            result.update({
+                "distance_express_max_distance": diagnostics.get("max_distance", np.nan),
+                "distance_express_distance_backend": diagnostics.get(
+                    "distance_backend",
+                    np.nan,
+                ),
+                "distance_express_n_candidates_total": diagnostics.get(
+                    "n_candidates_total",
+                    np.nan,
+                ),
+                "distance_express_chosen_size": diagnostics.get("chosen_size", np.nan),
+                "distance_express_exact_matches": diagnostics.get("exact_matches", np.nan),
+                "distance_express_max_chosen_distance": diagnostics.get(
+                    "max_chosen_distance",
+                    np.nan,
+                ),
+                "distance_express_mean_chosen_distance": diagnostics.get(
+                    "mean_chosen_distance",
+                    np.nan,
+                ),
+                "distance_express_median_chosen_distance": diagnostics.get(
+                    "median_chosen_distance",
+                    np.nan,
+                ),
+                "distance_express_min_distance": diagnostics.get("min_distance", np.nan),
+                "distance_express_median_distance": diagnostics.get(
+                    "median_distance",
+                    np.nan,
+                ),
+                "distance_express_mean_distance": diagnostics.get("mean_distance", np.nan),
+                "distance_express_max_distance_observed": diagnostics.get(
+                    "max_distance_observed",
+                    np.nan,
+                ),
             })
 
         return result

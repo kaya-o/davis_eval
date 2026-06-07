@@ -24,7 +24,9 @@ STRATEGY_ORDER = [
     "ADA",
     "EXPRESS",
     "RELAXED-EXPRESS",
+    "DISTANCE-EXPRESS",
     "WEIGHTED-EXPRESS",
+    "WEIGHTED-NEIGHBORHOOD-EXPRESS",
     "EXPRESS-M",
     "K-EXPRESS",
 ]
@@ -33,12 +35,21 @@ METHOD_NOTES = {
     "ADA": "(Bao et al.)",
     "EXPRESS": "(Sale and Ramdas)",
     "RELAXED-EXPRESS": "(new)",
+    "DISTANCE-EXPRESS": "(new)",
     "WEIGHTED-EXPRESS": "(new)",
+    "WEIGHTED-NEIGHBORHOOD-EXPRESS": "(new)",
     "EXPRESS-M": "(Sale and Ramdas)",
     "K-EXPRESS": "(Sale and Ramdas)",
 }
 DEFAULT_STRATEGY_LABELS = {
-    "WEIGHTED-EXPRESS": "WEIGHTED-\nEXPRESS",
+    "S-FIX": "S\nFIX",
+    "S-FULL": "S\nFULL",
+    "RELAXED-EXPRESS": "RELAXED\nEXPRESS",
+    "DISTANCE-EXPRESS": "DISTANCE\nEXPRESS",
+    "WEIGHTED-EXPRESS": "WEIGHTED\nEXPRESS",
+    "WEIGHTED-NEIGHBORHOOD-EXPRESS": "WEIGHTED\nNBRHD\nEXPRESS",
+    "EXPRESS-M": "EXPRESS\nM",
+    "K-EXPRESS": "K\nEXPRESS",
 }
 
 
@@ -81,7 +92,7 @@ def strategy_label_overrides_from_config(config):
 
     if isinstance(k_express, float) and k_express.is_integer():
         k_express = int(k_express)
-    labels["K-EXPRESS"] = f"{k_express}-EXPRESS"
+    labels["K-EXPRESS"] = f"{k_express}\nEXPRESS"
     return labels
 
 
@@ -187,7 +198,7 @@ def plot_sale_ramdas_style(
         "inf": y_min + 0.145 * span,
     }
 
-    fig, ax = plt.subplots(figsize=(10.5, 6.2))
+    fig, ax = plt.subplots(figsize=(13.5, 6.8))
     ax.scatter(
         x,
         miscoverage,
@@ -217,17 +228,17 @@ def plot_sale_ramdas_style(
         if note:
             ax.text(
                 i,
-                -0.065,
+                -0.15,
                 note,
                 ha="center",
                 va="top",
-                fontsize=7,
+                fontsize=6.5,
                 transform=ax.get_xaxis_transform(),
             )
         if strategy in PROVABLY_CORRECT:
             ax.text(
                 i,
-                -0.11,
+                -0.23,
                 r"$\checkmark$",
                 ha="center",
                 va="top",
@@ -241,13 +252,13 @@ def plot_sale_ramdas_style(
     ax.set_ylabel("Miscoverage")
     ax.set_ylim(y_min, y_max)
     ax.set_xticks(x)
-    ax.set_xticklabels(xtick_labels, fontsize=9)
+    ax.set_xticklabels(xtick_labels, fontsize=8)
     ax.grid(alpha=0.25)
     ax.legend(loc="upper right")
 
     if parameter_text:
         fig.text(0.5, 0.018, parameter_text, ha="center", va="bottom", fontsize=9)
-    fig.tight_layout(rect=(0, 0.08, 1, 1))
+    fig.tight_layout(rect=(0, 0.18, 1, 1))
 
     save_path = Path(save_path)
     save_path.parent.mkdir(parents=True, exist_ok=True)

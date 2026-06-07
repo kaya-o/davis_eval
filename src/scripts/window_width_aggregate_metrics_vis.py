@@ -58,7 +58,7 @@ def summarize_suite(suite_dir, strategies=None):
     return summary.sort_values(["window_width", "strategy"]).reset_index(drop=True)
 
 
-def plot_summary(summary, output_path):
+def plot_summary(summary, output_path, strategies=None):
     metrics = [
         ("miscoverage", "miscoverage"),
         ("median_interval_length", "median interval length"),
@@ -70,7 +70,14 @@ def plot_summary(summary, output_path):
 
     fig, axes = plt.subplots(1, 3, figsize=(15, 4.8), sharex=True)
 
-    strategies = list(dict.fromkeys(summary["strategy"]))
+    if strategies is None:
+        strategies = list(dict.fromkeys(summary["strategy"]))
+    else:
+        strategies = [
+            strategy
+            for strategy in dict.fromkeys(strategies)
+            if strategy in set(summary["strategy"])
+        ]
     for ax, (metric, ylabel) in zip(axes, metrics):
         for strategy in strategies:
             strategy_df = summary[summary["strategy"] == strategy].sort_values("window_width")
@@ -137,7 +144,7 @@ def main():
     summary = summarize_suite(suite_dir, strategies=args.strategies)
     summary_csv.parent.mkdir(parents=True, exist_ok=True)
     summary.to_csv(summary_csv, index=False)
-    plot_summary(summary, output_path)
+    plot_summary(summary, output_path, strategies=args.strategies)
 
     print(f"Wrote plot to {output_path}")
     print(f"Wrote summary CSV to {summary_csv}")
