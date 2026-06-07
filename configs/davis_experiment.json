@@ -1,6 +1,6 @@
 {
-  "experiment_name": "weighted_expr_max_dist_sweep",
-  "n_runs": 100,
+  "experiment_name": "adaptive_weighted_express_sanity",
+  "n_runs": 10,
   "seed": 42,
   "data": {
     "path": "data/davis_other_data_models.csv",
@@ -21,23 +21,27 @@
   "conformal": {
     "alpha": 0.4,
     "randomized_calibration": true,
-    "k_express": 7500,
+    "relaxed_express_target_size": null,
+    "relaxed_express_rank_delta": 0.15,
     "express_distance": "hamming",
-    "weighted_express_lambda": 1.0,
+
+    "weighted_express_lambda": 35,
     "weighted_express_distance_normalization": "history_length",
-    "weighted_express_max_distance": 1,
+    "weighted_express_max_distance": 1.0,
     "weighted_express_max_rank_pct": null,
     "weighted_express_debug": false,
-    "weighted_neighborhood_express_lambda": 1.0,
-    "weighted_neighborhood_express_distance_normalization": "rank",
-    "weighted_neighborhood_express_max_distance": null,
-    "weighted_neighborhood_express_max_rank_pct": 0.2,
-    "weighted_neighborhood_express_max_neighbors": 200,
-    "weighted_neighborhood_express_debug": false
+
+    "adaptive_weighted_express_low_distance_threshold": 0,
+    "adaptive_weighted_express_target_low_distance_count": 10,
+    "adaptive_weighted_express_lambda_min": 35.0,
+    "adaptive_weighted_express_lambda_max": 200.0,
+    "adaptive_weighted_express_max_distance": 1.0,
+    "adaptive_weighted_express_debug": true
   },
   "strategies": [
     "EXPRESS",
     "RELAXED-EXPRESS",
-    "WEIGHTED-EXPRESS"
+    "WEIGHTED-EXPRESS",
+    "ADAPTIVE-WEIGHTED-EXPRESS"
   ]
 }

@@ -139,6 +139,36 @@ def dump_experiment_results(
         "weighted_express_stress",
         "weighted_express_infinite",
 
+        "adaptive_weighted_express_low_distance_threshold",
+        "adaptive_weighted_express_target_low_distance_count",
+        "adaptive_weighted_express_lambda_min",
+        "adaptive_weighted_express_lambda_max",
+        "adaptive_weighted_express_lambda_t",
+        "adaptive_weighted_express_stress",
+        "adaptive_weighted_express_n_low_distance",
+        "adaptive_weighted_express_max_distance_cutoff",
+        "adaptive_weighted_express_distance_backend",
+        "adaptive_weighted_express_n_candidates_total",
+        "adaptive_weighted_express_n_positive_weights",
+        "adaptive_weighted_express_positive_weight_fraction",
+        "adaptive_weighted_express_sum_positive_weights",
+        "adaptive_weighted_express_sum_raw_weights",
+        "adaptive_weighted_express_finite_mass",
+        "adaptive_weighted_express_test_mass",
+        "adaptive_weighted_express_min_distance",
+        "adaptive_weighted_express_median_distance",
+        "adaptive_weighted_express_mean_distance",
+        "adaptive_weighted_express_max_distance",
+        "adaptive_weighted_express_min_weight",
+        "adaptive_weighted_express_median_weight",
+        "adaptive_weighted_express_mean_weight",
+        "adaptive_weighted_express_max_weight",
+        "adaptive_weighted_express_n_eff",
+        "adaptive_weighted_express_n_eff_finite",
+        "adaptive_weighted_express_weighted_mean_distance",
+        "adaptive_weighted_express_stress_weighted_distance",
+        "adaptive_weighted_express_infinite",
+
         "weighted_neighborhood_express_lambda",
         "weighted_neighborhood_express_distance_backend",
         "weighted_neighborhood_express_distance_normalization",
@@ -237,6 +267,7 @@ class Conformal:
         self._relaxed_express_last_diagnostics = None
         self._distance_express_last_diagnostics = None
         self._weighted_express_last_diagnostics = None
+        self._adaptive_weighted_express_last_diagnostics = None
         self._weighted_neighborhood_express_last_diagnostics = None
 
     def selected_count(self, j=None):
@@ -1032,6 +1063,171 @@ class Conformal:
         self._weighted_express_last_diagnostics = diagnostics
         return buffer, n_positive_weights, diagnostics
 
+    def adaptive_weighted_express(
+        self,
+        score_t,
+        current_bounds,
+        low_distance_threshold=0.01,
+        target_low_distance_count=6,
+        lambda_min=35.0,
+        lambda_max=300.0,
+        max_distance=1.0,
+        distance_backend="hamming",
+        debug=False,
+    ):
+        """
+        ADAPTIVE-WEIGHTED-EXPRESS makes the distance-decay parameter depend on
+        local data-starvation stress. When enough near-signature candidates
+        exist, the method uses a large lambda and behaves close to exact
+        EXPRESS. When near-signature candidates are scarce, lambda decreases
+        smoothly, allowing more distant calibration points to contribute. This
+        is an empirical relaxation and does not restore the original
+        finite-sample EXPRESS guarantee.
+        """
+        del debug
+
+        low_distance_threshold = float(low_distance_threshold)
+        if low_distance_threshold < 0 or low_distance_threshold > 1:
+            raise ValueError("adaptive_weighted_express_low_distance_threshold must be in [0, 1]")
+
+        target_low_distance_count = int(target_low_distance_count)
+        if target_low_distance_count <= 0:
+            raise ValueError("adaptive_weighted_express_target_low_distance_count must be positive")
+
+        lambda_min = float(lambda_min)
+        lambda_max = float(lambda_max)
+        if lambda_min <= 0:
+            raise ValueError("adaptive_weighted_express_lambda_min must be positive")
+        if lambda_max <= 0:
+            raise ValueError("adaptive_weighted_express_lambda_max must be positive")
+        if lambda_max < lambda_min:
+            raise ValueError("adaptive_weighted_express_lambda_max must be >= lambda_min")
+
+        if max_distance is not None:
+            max_distance = float(max_distance)
+            if max_distance < 0 or max_distance > 1:
+                raise ValueError("adaptive_weighted_express_max_distance must be in [0, 1] or null")
+
+        candidate_residuals = np.concatenate([
+            self.residuals_off,
+            self.residuals_past,
+        ])
+        candidate_scores = np.concatenate([
+            self.scores_off,
+            self.scores_past,
+        ])
+
+        if len(candidate_residuals) == 0:
+            diagnostics = {
+                "low_distance_threshold": low_distance_threshold,
+                "target_low_distance_count": target_low_distance_count,
+                "lambda_min": lambda_min,
+                "lambda_max": lambda_max,
+                "lambda_t": lambda_min,
+                "stress": 1.0,
+                "n_low_distance": 0,
+                "max_distance_cutoff": np.nan if max_distance is None else max_distance,
+                "distance_backend": distance_backend,
+                "n_candidates_total": 0,
+                "n_positive_weights": 0,
+                "positive_weight_fraction": 0.0,
+                "sum_positive_weights": 0.0,
+                "sum_raw_weights": 0.0,
+                "finite_mass": 0.0,
+                "test_mass": 1.0,
+                "min_distance": np.nan,
+                "median_distance": np.nan,
+                "mean_distance": np.nan,
+                "max_distance": np.nan,
+                "min_weight": np.nan,
+                "median_weight": np.nan,
+                "mean_weight": np.nan,
+                "max_weight": np.nan,
+                "n_eff": 0.0,
+                "n_eff_finite": 0.0,
+                "weighted_mean_distance": np.nan,
+                "stress_weighted_distance": 0.0,
+                "infinite": True,
+            }
+            self._adaptive_weighted_express_last_diagnostics = diagnostics
+            return np.inf, 0, diagnostics
+
+        current_lower, current_upper = current_bounds
+        lower_bounds = np.append(self.bounds_past_lower, current_lower)
+        upper_bounds = np.append(self.bounds_past, current_upper)
+        history_length = max(len(lower_bounds), 1)
+
+        raw_distances = self.signature_distance(
+            candidate_scores,
+            score_t,
+            lower_bounds,
+            upper_bounds,
+            distance_backend=distance_backend,
+        )
+        distances = raw_distances / history_length
+
+        n_low_distance = int(np.sum(distances <= low_distance_threshold))
+        stress = (target_low_distance_count - n_low_distance) / target_low_distance_count
+        stress = float(np.clip(stress, 0.0, 1.0))
+        lambda_t = float(lambda_max ** (1.0 - stress) * lambda_min ** stress)
+
+        raw_weights = np.exp(-lambda_t * distances)
+        if max_distance is not None:
+            raw_weights[distances > max_distance] = 0.0
+
+        buffer = self.weighted_quantile_threshold(candidate_residuals, raw_weights)
+
+        positive_weights = raw_weights > 0
+        n_positive_weights = int(np.sum(positive_weights))
+        sum_raw_weights = float(np.sum(raw_weights))
+        denom = 1.0 + sum_raw_weights
+        normalized_weights = raw_weights / denom
+        finite_weight_sum = float(np.sum(normalized_weights))
+        weight_square_sum = float(np.sum(normalized_weights ** 2))
+        weight_square_sum_raw = float(np.sum(raw_weights ** 2))
+
+        diagnostics = {
+            "low_distance_threshold": float(low_distance_threshold),
+            "target_low_distance_count": int(target_low_distance_count),
+            "lambda_min": float(lambda_min),
+            "lambda_max": float(lambda_max),
+            "lambda_t": float(lambda_t),
+            "stress": float(stress),
+            "n_low_distance": int(n_low_distance),
+            "max_distance_cutoff": np.nan if max_distance is None else float(max_distance),
+            "distance_backend": distance_backend,
+            "n_candidates_total": int(len(candidate_residuals)),
+            "n_positive_weights": n_positive_weights,
+            "positive_weight_fraction": float(n_positive_weights / len(raw_weights)),
+            "sum_positive_weights": float(np.sum(raw_weights[positive_weights])),
+            "sum_raw_weights": sum_raw_weights,
+            "finite_mass": float(sum_raw_weights / denom),
+            "test_mass": float(1.0 / denom),
+            "min_distance": float(np.min(distances)),
+            "median_distance": float(np.median(distances)),
+            "mean_distance": float(np.mean(distances)),
+            "max_distance": float(np.max(distances)),
+            "min_weight": float(np.min(raw_weights)),
+            "median_weight": float(np.median(raw_weights)),
+            "mean_weight": float(np.mean(raw_weights)),
+            "max_weight": float(np.max(raw_weights)),
+            "n_eff": float(1.0 / weight_square_sum) if weight_square_sum > 0 else 0.0,
+            "n_eff_finite": (
+                float((sum_raw_weights ** 2) / weight_square_sum_raw)
+                if sum_raw_weights > 0 and weight_square_sum_raw > 0
+                else 0.0
+            ),
+            "weighted_mean_distance": (
+                float(np.sum(normalized_weights * distances) / finite_weight_sum)
+                if finite_weight_sum > 0
+                else np.nan
+            ),
+            "stress_weighted_distance": float(np.sum(normalized_weights * distances)),
+            "infinite": bool(np.isinf(buffer)),
+        }
+        self._adaptive_weighted_express_last_diagnostics = diagnostics
+        return buffer, n_positive_weights, diagnostics
+
     def weighted_neighborhood_express(
         self,
         score_t,
@@ -1142,6 +1338,12 @@ class Conformal:
         weighted_express_max_distance=None,
         weighted_express_max_rank_pct=0.05,
         weighted_express_debug=False,
+        adaptive_weighted_express_low_distance_threshold=0.01,
+        adaptive_weighted_express_target_low_distance_count=6,
+        adaptive_weighted_express_lambda_min=35.0,
+        adaptive_weighted_express_lambda_max=300.0,
+        adaptive_weighted_express_max_distance=1.0,
+        adaptive_weighted_express_debug=False,
         weighted_neighborhood_express_lambda=1.0,
         weighted_neighborhood_express_distance_normalization="rank",
         weighted_neighborhood_express_max_distance=None,
@@ -1255,6 +1457,103 @@ class Conformal:
                 ),
                 "weighted_express_stress": diagnostics.get("stress", np.nan),
                 "weighted_express_infinite": diagnostics.get("infinite", np.nan),
+            }
+        elif strategy == "ADAPTIVE-WEIGHTED-EXPRESS":
+            buffer, n_calibration, diagnostics = self.adaptive_weighted_express(
+                score_t,
+                current_bounds,
+                low_distance_threshold=adaptive_weighted_express_low_distance_threshold,
+                target_low_distance_count=adaptive_weighted_express_target_low_distance_count,
+                lambda_min=adaptive_weighted_express_lambda_min,
+                lambda_max=adaptive_weighted_express_lambda_max,
+                max_distance=adaptive_weighted_express_max_distance,
+                distance_backend=express_distance,
+                debug=adaptive_weighted_express_debug,
+            )
+            covered = np.abs(y_t - point_prediction_t) <= buffer
+
+            return {
+                "miscovered": not covered,
+                "n_calibration": n_calibration,
+                "interval_length": self.interval_length_from_threshold(buffer),
+                "buffer": buffer,
+                "adaptive_weighted_express_low_distance_threshold": diagnostics.get(
+                    "low_distance_threshold",
+                    np.nan,
+                ),
+                "adaptive_weighted_express_target_low_distance_count": diagnostics.get(
+                    "target_low_distance_count",
+                    np.nan,
+                ),
+                "adaptive_weighted_express_lambda_min": diagnostics.get("lambda_min", np.nan),
+                "adaptive_weighted_express_lambda_max": diagnostics.get("lambda_max", np.nan),
+                "adaptive_weighted_express_lambda_t": diagnostics.get("lambda_t", np.nan),
+                "adaptive_weighted_express_stress": diagnostics.get("stress", np.nan),
+                "adaptive_weighted_express_n_low_distance": diagnostics.get(
+                    "n_low_distance",
+                    np.nan,
+                ),
+                "adaptive_weighted_express_max_distance_cutoff": diagnostics.get(
+                    "max_distance_cutoff",
+                    np.nan,
+                ),
+                "adaptive_weighted_express_distance_backend": diagnostics.get(
+                    "distance_backend",
+                    np.nan,
+                ),
+                "adaptive_weighted_express_n_candidates_total": diagnostics.get(
+                    "n_candidates_total",
+                    np.nan,
+                ),
+                "adaptive_weighted_express_n_positive_weights": diagnostics.get(
+                    "n_positive_weights",
+                    np.nan,
+                ),
+                "adaptive_weighted_express_positive_weight_fraction": diagnostics.get(
+                    "positive_weight_fraction",
+                    np.nan,
+                ),
+                "adaptive_weighted_express_sum_positive_weights": diagnostics.get(
+                    "sum_positive_weights",
+                    np.nan,
+                ),
+                "adaptive_weighted_express_sum_raw_weights": diagnostics.get(
+                    "sum_raw_weights",
+                    np.nan,
+                ),
+                "adaptive_weighted_express_finite_mass": diagnostics.get("finite_mass", np.nan),
+                "adaptive_weighted_express_test_mass": diagnostics.get("test_mass", np.nan),
+                "adaptive_weighted_express_min_distance": diagnostics.get("min_distance", np.nan),
+                "adaptive_weighted_express_median_distance": diagnostics.get(
+                    "median_distance",
+                    np.nan,
+                ),
+                "adaptive_weighted_express_mean_distance": diagnostics.get(
+                    "mean_distance",
+                    np.nan,
+                ),
+                "adaptive_weighted_express_max_distance": diagnostics.get("max_distance", np.nan),
+                "adaptive_weighted_express_min_weight": diagnostics.get("min_weight", np.nan),
+                "adaptive_weighted_express_median_weight": diagnostics.get(
+                    "median_weight",
+                    np.nan,
+                ),
+                "adaptive_weighted_express_mean_weight": diagnostics.get("mean_weight", np.nan),
+                "adaptive_weighted_express_max_weight": diagnostics.get("max_weight", np.nan),
+                "adaptive_weighted_express_n_eff": diagnostics.get("n_eff", np.nan),
+                "adaptive_weighted_express_n_eff_finite": diagnostics.get(
+                    "n_eff_finite",
+                    np.nan,
+                ),
+                "adaptive_weighted_express_weighted_mean_distance": diagnostics.get(
+                    "weighted_mean_distance",
+                    np.nan,
+                ),
+                "adaptive_weighted_express_stress_weighted_distance": diagnostics.get(
+                    "stress_weighted_distance",
+                    np.nan,
+                ),
+                "adaptive_weighted_express_infinite": diagnostics.get("infinite", np.nan),
             }
         elif strategy == "WEIGHTED-NEIGHBORHOOD-EXPRESS":
             buffer, n_calibration, diagnostics = self.weighted_neighborhood_express(

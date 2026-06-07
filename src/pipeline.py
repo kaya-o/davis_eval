@@ -51,6 +51,12 @@ DEFAULT_CONFIG = {
         "weighted_express_max_distance": None,
         "weighted_express_max_rank_pct": 0.05,
         "weighted_express_debug": False,
+        "adaptive_weighted_express_low_distance_threshold": 0.01,
+        "adaptive_weighted_express_target_low_distance_count": 6,
+        "adaptive_weighted_express_lambda_min": 35.0,
+        "adaptive_weighted_express_lambda_max": 300.0,
+        "adaptive_weighted_express_max_distance": 1.0,
+        "adaptive_weighted_express_debug": False,
         "weighted_neighborhood_express_lambda": 1.0,
         "weighted_neighborhood_express_distance_normalization": "rank",
         "weighted_neighborhood_express_max_distance": None,
@@ -210,6 +216,46 @@ def run_experiment(config, config_path=None, output_root=DEFAULT_RESULTS_ROOT, r
     if weighted_express_max_rank_pct is not None:
         weighted_express_max_rank_pct = float(weighted_express_max_rank_pct)
     weighted_express_debug = bool(conformal_config.get("weighted_express_debug", False))
+    adaptive_weighted_express_low_distance_threshold = conformal_config.get(
+        "adaptive_weighted_express_low_distance_threshold",
+        0.01,
+    )
+    adaptive_weighted_express_low_distance_threshold = float(
+        adaptive_weighted_express_low_distance_threshold
+    )
+    if (
+        adaptive_weighted_express_low_distance_threshold < 0
+        or adaptive_weighted_express_low_distance_threshold > 1
+    ):
+        raise ValueError("adaptive_weighted_express_low_distance_threshold must be in [0, 1]")
+    adaptive_weighted_express_target_low_distance_count = int(
+        conformal_config.get("adaptive_weighted_express_target_low_distance_count", 6)
+    )
+    if adaptive_weighted_express_target_low_distance_count <= 0:
+        raise ValueError("adaptive_weighted_express_target_low_distance_count must be positive")
+    adaptive_weighted_express_lambda_min = float(
+        conformal_config.get("adaptive_weighted_express_lambda_min", 35.0)
+    )
+    adaptive_weighted_express_lambda_max = float(
+        conformal_config.get("adaptive_weighted_express_lambda_max", 300.0)
+    )
+    if adaptive_weighted_express_lambda_min <= 0:
+        raise ValueError("adaptive_weighted_express_lambda_min must be positive")
+    if adaptive_weighted_express_lambda_max <= 0:
+        raise ValueError("adaptive_weighted_express_lambda_max must be positive")
+    if adaptive_weighted_express_lambda_max < adaptive_weighted_express_lambda_min:
+        raise ValueError("adaptive_weighted_express_lambda_max must be >= lambda_min")
+    adaptive_weighted_express_max_distance = conformal_config.get(
+        "adaptive_weighted_express_max_distance",
+        1.0,
+    )
+    if adaptive_weighted_express_max_distance is not None:
+        adaptive_weighted_express_max_distance = float(adaptive_weighted_express_max_distance)
+        if adaptive_weighted_express_max_distance < 0 or adaptive_weighted_express_max_distance > 1:
+            raise ValueError("adaptive_weighted_express_max_distance must be in [0, 1] or null")
+    adaptive_weighted_express_debug = bool(
+        conformal_config.get("adaptive_weighted_express_debug", False)
+    )
     weighted_neighborhood_express_lambda = float(
         conformal_config.get("weighted_neighborhood_express_lambda", 1.0)
     )
@@ -328,6 +374,22 @@ def run_experiment(config, config_path=None, output_root=DEFAULT_RESULTS_ROOT, r
                         weighted_express_max_distance=weighted_express_max_distance,
                         weighted_express_max_rank_pct=weighted_express_max_rank_pct,
                         weighted_express_debug=weighted_express_debug,
+                        adaptive_weighted_express_low_distance_threshold=(
+                            adaptive_weighted_express_low_distance_threshold
+                        ),
+                        adaptive_weighted_express_target_low_distance_count=(
+                            adaptive_weighted_express_target_low_distance_count
+                        ),
+                        adaptive_weighted_express_lambda_min=(
+                            adaptive_weighted_express_lambda_min
+                        ),
+                        adaptive_weighted_express_lambda_max=(
+                            adaptive_weighted_express_lambda_max
+                        ),
+                        adaptive_weighted_express_max_distance=(
+                            adaptive_weighted_express_max_distance
+                        ),
+                        adaptive_weighted_express_debug=adaptive_weighted_express_debug,
                         weighted_neighborhood_express_lambda=(
                             weighted_neighborhood_express_lambda
                         ),
@@ -501,6 +563,93 @@ def run_experiment(config, config_path=None, output_root=DEFAULT_RESULTS_ROOT, r
                         "weighted_express_infinite": strategy_result.get(
                             "weighted_express_infinite"
                         ),
+                        "adaptive_weighted_express_low_distance_threshold": strategy_result.get(
+                            "adaptive_weighted_express_low_distance_threshold"
+                        ),
+                        "adaptive_weighted_express_target_low_distance_count": strategy_result.get(
+                            "adaptive_weighted_express_target_low_distance_count"
+                        ),
+                        "adaptive_weighted_express_lambda_min": strategy_result.get(
+                            "adaptive_weighted_express_lambda_min"
+                        ),
+                        "adaptive_weighted_express_lambda_max": strategy_result.get(
+                            "adaptive_weighted_express_lambda_max"
+                        ),
+                        "adaptive_weighted_express_lambda_t": strategy_result.get(
+                            "adaptive_weighted_express_lambda_t"
+                        ),
+                        "adaptive_weighted_express_stress": strategy_result.get(
+                            "adaptive_weighted_express_stress"
+                        ),
+                        "adaptive_weighted_express_n_low_distance": strategy_result.get(
+                            "adaptive_weighted_express_n_low_distance"
+                        ),
+                        "adaptive_weighted_express_max_distance_cutoff": strategy_result.get(
+                            "adaptive_weighted_express_max_distance_cutoff"
+                        ),
+                        "adaptive_weighted_express_distance_backend": strategy_result.get(
+                            "adaptive_weighted_express_distance_backend"
+                        ),
+                        "adaptive_weighted_express_n_candidates_total": strategy_result.get(
+                            "adaptive_weighted_express_n_candidates_total"
+                        ),
+                        "adaptive_weighted_express_n_positive_weights": strategy_result.get(
+                            "adaptive_weighted_express_n_positive_weights"
+                        ),
+                        "adaptive_weighted_express_positive_weight_fraction": strategy_result.get(
+                            "adaptive_weighted_express_positive_weight_fraction"
+                        ),
+                        "adaptive_weighted_express_sum_positive_weights": strategy_result.get(
+                            "adaptive_weighted_express_sum_positive_weights"
+                        ),
+                        "adaptive_weighted_express_sum_raw_weights": strategy_result.get(
+                            "adaptive_weighted_express_sum_raw_weights"
+                        ),
+                        "adaptive_weighted_express_finite_mass": strategy_result.get(
+                            "adaptive_weighted_express_finite_mass"
+                        ),
+                        "adaptive_weighted_express_test_mass": strategy_result.get(
+                            "adaptive_weighted_express_test_mass"
+                        ),
+                        "adaptive_weighted_express_min_distance": strategy_result.get(
+                            "adaptive_weighted_express_min_distance"
+                        ),
+                        "adaptive_weighted_express_median_distance": strategy_result.get(
+                            "adaptive_weighted_express_median_distance"
+                        ),
+                        "adaptive_weighted_express_mean_distance": strategy_result.get(
+                            "adaptive_weighted_express_mean_distance"
+                        ),
+                        "adaptive_weighted_express_max_distance": strategy_result.get(
+                            "adaptive_weighted_express_max_distance"
+                        ),
+                        "adaptive_weighted_express_min_weight": strategy_result.get(
+                            "adaptive_weighted_express_min_weight"
+                        ),
+                        "adaptive_weighted_express_median_weight": strategy_result.get(
+                            "adaptive_weighted_express_median_weight"
+                        ),
+                        "adaptive_weighted_express_mean_weight": strategy_result.get(
+                            "adaptive_weighted_express_mean_weight"
+                        ),
+                        "adaptive_weighted_express_max_weight": strategy_result.get(
+                            "adaptive_weighted_express_max_weight"
+                        ),
+                        "adaptive_weighted_express_n_eff": strategy_result.get(
+                            "adaptive_weighted_express_n_eff"
+                        ),
+                        "adaptive_weighted_express_n_eff_finite": strategy_result.get(
+                            "adaptive_weighted_express_n_eff_finite"
+                        ),
+                        "adaptive_weighted_express_weighted_mean_distance": strategy_result.get(
+                            "adaptive_weighted_express_weighted_mean_distance"
+                        ),
+                        "adaptive_weighted_express_stress_weighted_distance": strategy_result.get(
+                            "adaptive_weighted_express_stress_weighted_distance"
+                        ),
+                        "adaptive_weighted_express_infinite": strategy_result.get(
+                            "adaptive_weighted_express_infinite"
+                        ),
                         "weighted_neighborhood_express_lambda": strategy_result.get(
                             "weighted_neighborhood_express_lambda"
                         ),
@@ -633,6 +782,40 @@ def run_experiment(config, config_path=None, output_root=DEFAULT_RESULTS_ROOT, r
                 values = np.asarray([
                     row[key]
                     for row in weighted_rows
+                    if row.get(key) is not None and not pd.isna(row.get(key))
+                ], dtype=float)
+                if len(values) == 0:
+                    continue
+                print(
+                    f"  {key}: "
+                    f"median={np.median(values):.6g}, "
+                    f"mean={np.mean(values):.6g}, "
+                    f"min={np.min(values):.6g}, "
+                    f"max={np.max(values):.6g}"
+                )
+
+    if adaptive_weighted_express_debug:
+        adaptive_weighted_rows = [
+            row for row in raw_rows if row["strategy"] == "ADAPTIVE-WEIGHTED-EXPRESS"
+        ]
+        if adaptive_weighted_rows:
+            print("ADAPTIVE-WEIGHTED-EXPRESS diagnostics:")
+            for key in [
+                "adaptive_weighted_express_lambda_t",
+                "adaptive_weighted_express_stress",
+                "adaptive_weighted_express_n_low_distance",
+                "adaptive_weighted_express_n_candidates_total",
+                "adaptive_weighted_express_n_positive_weights",
+                "adaptive_weighted_express_sum_raw_weights",
+                "adaptive_weighted_express_finite_mass",
+                "adaptive_weighted_express_test_mass",
+                "adaptive_weighted_express_n_eff_finite",
+                "adaptive_weighted_express_weighted_mean_distance",
+                "adaptive_weighted_express_infinite",
+            ]:
+                values = np.asarray([
+                    row[key]
+                    for row in adaptive_weighted_rows
                     if row.get(key) is not None and not pd.isna(row.get(key))
                 ], dtype=float)
                 if len(values) == 0:
