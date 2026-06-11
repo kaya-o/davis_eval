@@ -53,6 +53,10 @@ DEFAULT_CONFIG = {
         "weighted_express_debug": False,
         "adaptive_weighted_express_low_distance_threshold": 0.01,
         "adaptive_weighted_express_target_low_distance_count": 6,
+        "adaptive_weighted_express_stress_mode": "linear",
+        "adaptive_weighted_express_stress_midpoint_count": 6,
+        "adaptive_weighted_express_stress_slope": 0.8,
+        "adaptive_weighted_express_stress_count_source": "low_distance",
         "adaptive_weighted_express_lambda_min": 35.0,
         "adaptive_weighted_express_lambda_max": 300.0,
         "adaptive_weighted_express_max_distance": 1.0,
@@ -233,6 +237,38 @@ def run_experiment(config, config_path=None, output_root=DEFAULT_RESULTS_ROOT, r
     )
     if adaptive_weighted_express_target_low_distance_count <= 0:
         raise ValueError("adaptive_weighted_express_target_low_distance_count must be positive")
+    adaptive_weighted_express_stress_mode = conformal_config.get(
+        "adaptive_weighted_express_stress_mode",
+        "linear",
+    )
+    if adaptive_weighted_express_stress_mode not in {"linear", "sigmoid"}:
+        raise ValueError(
+            "adaptive_weighted_express_stress_mode must be one of ['linear', 'sigmoid'], "
+            f"got {adaptive_weighted_express_stress_mode!r}"
+        )
+    adaptive_weighted_express_stress_midpoint_count = int(
+        conformal_config.get("adaptive_weighted_express_stress_midpoint_count", 6)
+    )
+    if adaptive_weighted_express_stress_midpoint_count < 0:
+        raise ValueError("adaptive_weighted_express_stress_midpoint_count must be nonnegative")
+    adaptive_weighted_express_stress_slope = float(
+        conformal_config.get("adaptive_weighted_express_stress_slope", 0.8)
+    )
+    if adaptive_weighted_express_stress_slope <= 0:
+        raise ValueError("adaptive_weighted_express_stress_slope must be positive")
+    adaptive_weighted_express_stress_count_source = conformal_config.get(
+        "adaptive_weighted_express_stress_count_source",
+        "low_distance",
+    )
+    if adaptive_weighted_express_stress_count_source not in {
+        "low_distance",
+        "express_calibration",
+    }:
+        raise ValueError(
+            "adaptive_weighted_express_stress_count_source must be one of "
+            "['low_distance', 'express_calibration'], "
+            f"got {adaptive_weighted_express_stress_count_source!r}"
+        )
     adaptive_weighted_express_lambda_min = float(
         conformal_config.get("adaptive_weighted_express_lambda_min", 35.0)
     )
@@ -379,6 +415,18 @@ def run_experiment(config, config_path=None, output_root=DEFAULT_RESULTS_ROOT, r
                         ),
                         adaptive_weighted_express_target_low_distance_count=(
                             adaptive_weighted_express_target_low_distance_count
+                        ),
+                        adaptive_weighted_express_stress_mode=(
+                            adaptive_weighted_express_stress_mode
+                        ),
+                        adaptive_weighted_express_stress_midpoint_count=(
+                            adaptive_weighted_express_stress_midpoint_count
+                        ),
+                        adaptive_weighted_express_stress_slope=(
+                            adaptive_weighted_express_stress_slope
+                        ),
+                        adaptive_weighted_express_stress_count_source=(
+                            adaptive_weighted_express_stress_count_source
                         ),
                         adaptive_weighted_express_lambda_min=(
                             adaptive_weighted_express_lambda_min
@@ -580,6 +628,26 @@ def run_experiment(config, config_path=None, output_root=DEFAULT_RESULTS_ROOT, r
                         ),
                         "adaptive_weighted_express_stress": strategy_result.get(
                             "adaptive_weighted_express_stress"
+                        ),
+                        "adaptive_weighted_express_stress_mode": strategy_result.get(
+                            "adaptive_weighted_express_stress_mode"
+                        ),
+                        "adaptive_weighted_express_stress_midpoint_count": strategy_result.get(
+                            "adaptive_weighted_express_stress_midpoint_count"
+                        ),
+                        "adaptive_weighted_express_stress_slope": strategy_result.get(
+                            "adaptive_weighted_express_stress_slope"
+                        ),
+                        "adaptive_weighted_express_stress_count_source": strategy_result.get(
+                            "adaptive_weighted_express_stress_count_source"
+                        ),
+                        "adaptive_weighted_express_stress_count": strategy_result.get(
+                            "adaptive_weighted_express_stress_count"
+                        ),
+                        "adaptive_weighted_express_express_n_calibration_for_stress": (
+                            strategy_result.get(
+                                "adaptive_weighted_express_express_n_calibration_for_stress"
+                            )
                         ),
                         "adaptive_weighted_express_n_low_distance": strategy_result.get(
                             "adaptive_weighted_express_n_low_distance"
@@ -801,8 +869,12 @@ def run_experiment(config, config_path=None, output_root=DEFAULT_RESULTS_ROOT, r
         if adaptive_weighted_rows:
             print("ADAPTIVE-WEIGHTED-EXPRESS diagnostics:")
             for key in [
+                "adaptive_weighted_express_stress_midpoint_count",
+                "adaptive_weighted_express_stress_slope",
                 "adaptive_weighted_express_lambda_t",
                 "adaptive_weighted_express_stress",
+                "adaptive_weighted_express_stress_count",
+                "adaptive_weighted_express_express_n_calibration_for_stress",
                 "adaptive_weighted_express_n_low_distance",
                 "adaptive_weighted_express_n_candidates_total",
                 "adaptive_weighted_express_n_positive_weights",

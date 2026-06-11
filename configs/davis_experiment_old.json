@@ -11,7 +11,7 @@
   "selection": {
     "score_column": "muhat_2",
     "tau_1": 5.0,
-    "tau_0": 2500,
+    "tau_0": 4000,
     "window_width": 0.25,
     "tau_tail": 6.25
   },
@@ -33,13 +33,12 @@
     "weighted_express_debug": false,
 
     "adaptive_weighted_express_low_distance_threshold": 0.0,
-    "adaptive_weighted_express_target_low_distance_count": 150,
+    "adaptive_weighted_express_target_low_distance_count": 50,
     "adaptive_weighted_express_stress_mode": "sigmoid",
-    "adaptive_weighted_express_stress_midpoint_count": 75,
-    "adaptive_weighted_express_stress_slope": 0.1,
-    "adaptive_weighted_express_stress_count_source": "express_calibration",
+    "adaptive_weighted_express_stress_midpoint_count": 6,
+    "adaptive_weighted_express_stress_slope": 0.8,
     "adaptive_weighted_express_lambda_min": 1.0,
-    "adaptive_weighted_express_lambda_max": 200.0,
+    "adaptive_weighted_express_lambda_max": 35.0,
     "adaptive_weighted_express_max_distance": 0.05,
     "adaptive_weighted_express_debug": true
   },

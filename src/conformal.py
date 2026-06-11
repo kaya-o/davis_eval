@@ -145,6 +145,12 @@ def dump_experiment_results(
         "adaptive_weighted_express_lambda_max",
         "adaptive_weighted_express_lambda_t",
         "adaptive_weighted_express_stress",
+        "adaptive_weighted_express_stress_mode",
+        "adaptive_weighted_express_stress_midpoint_count",
+        "adaptive_weighted_express_stress_slope",
+        "adaptive_weighted_express_stress_count_source",
+        "adaptive_weighted_express_stress_count",
+        "adaptive_weighted_express_express_n_calibration_for_stress",
         "adaptive_weighted_express_n_low_distance",
         "adaptive_weighted_express_max_distance_cutoff",
         "adaptive_weighted_express_distance_backend",
@@ -1063,12 +1069,58 @@ class Conformal:
         self._weighted_express_last_diagnostics = diagnostics
         return buffer, n_positive_weights, diagnostics
 
+    def adaptive_weighted_express_stress_from_count(
+        self,
+        n_low_distance,
+        target_low_distance_count=6,
+        stress_mode="linear",
+        stress_midpoint_count=6,
+        stress_slope=0.8,
+    ):
+        n_low_distance = int(n_low_distance)
+
+        if stress_mode == "linear":
+            target_low_distance_count = int(target_low_distance_count)
+            if target_low_distance_count <= 0:
+                raise ValueError(
+                    "adaptive_weighted_express_target_low_distance_count must be positive"
+                )
+            stress = (target_low_distance_count - n_low_distance) / target_low_distance_count
+            return float(np.clip(stress, 0.0, 1.0))
+
+        if stress_mode == "sigmoid":
+            stress_midpoint_count = int(stress_midpoint_count)
+            if stress_midpoint_count < 0:
+                raise ValueError(
+                    "adaptive_weighted_express_stress_midpoint_count must be nonnegative"
+                )
+            stress_slope = float(stress_slope)
+            if stress_slope <= 0:
+                raise ValueError("adaptive_weighted_express_stress_slope must be positive")
+
+            z = stress_slope * (n_low_distance - stress_midpoint_count)
+            if z >= 0:
+                exp_neg_z = np.exp(-z)
+                return float(exp_neg_z / (1.0 + exp_neg_z))
+
+            exp_z = np.exp(z)
+            return float(1.0 / (1.0 + exp_z))
+
+        raise ValueError(
+            "adaptive_weighted_express_stress_mode must be one of ['linear', 'sigmoid'], "
+            f"got {stress_mode!r}"
+        )
+
     def adaptive_weighted_express(
         self,
         score_t,
         current_bounds,
         low_distance_threshold=0.01,
         target_low_distance_count=6,
+        stress_mode="linear",
+        stress_midpoint_count=6,
+        stress_slope=0.8,
+        stress_count_source="low_distance",
         lambda_min=35.0,
         lambda_max=300.0,
         max_distance=1.0,
@@ -1094,6 +1146,24 @@ class Conformal:
         if target_low_distance_count <= 0:
             raise ValueError("adaptive_weighted_express_target_low_distance_count must be positive")
 
+        if stress_mode not in {"linear", "sigmoid"}:
+            raise ValueError(
+                "adaptive_weighted_express_stress_mode must be one of ['linear', 'sigmoid'], "
+                f"got {stress_mode!r}"
+            )
+        if stress_count_source not in {"low_distance", "express_calibration"}:
+            raise ValueError(
+                "adaptive_weighted_express_stress_count_source must be one of "
+                "['low_distance', 'express_calibration'], "
+                f"got {stress_count_source!r}"
+            )
+        stress_midpoint_count = int(stress_midpoint_count)
+        if stress_midpoint_count < 0:
+            raise ValueError("adaptive_weighted_express_stress_midpoint_count must be nonnegative")
+        stress_slope = float(stress_slope)
+        if stress_slope <= 0:
+            raise ValueError("adaptive_weighted_express_stress_slope must be positive")
+
         lambda_min = float(lambda_min)
         lambda_max = float(lambda_max)
         if lambda_min <= 0:
@@ -1107,6 +1177,15 @@ class Conformal:
             max_distance = float(max_distance)
             if max_distance < 0 or max_distance > 1:
                 raise ValueError("adaptive_weighted_express_max_distance must be in [0, 1] or null")
+
+        empty_stress = self.adaptive_weighted_express_stress_from_count(
+            0,
+            target_low_distance_count=target_low_distance_count,
+            stress_mode=stress_mode,
+            stress_midpoint_count=stress_midpoint_count,
+            stress_slope=stress_slope,
+        )
+        empty_lambda_t = float(lambda_max ** (1.0 - empty_stress) * lambda_min ** empty_stress)
 
         candidate_residuals = np.concatenate([
             self.residuals_off,
@@ -1123,8 +1202,14 @@ class Conformal:
                 "target_low_distance_count": target_low_distance_count,
                 "lambda_min": lambda_min,
                 "lambda_max": lambda_max,
-                "lambda_t": lambda_min,
-                "stress": 1.0,
+                "lambda_t": empty_lambda_t,
+                "stress": empty_stress,
+                "stress_mode": stress_mode,
+                "stress_midpoint_count": stress_midpoint_count,
+                "stress_slope": stress_slope,
+                "stress_count_source": stress_count_source,
+                "stress_count": 0,
+                "express_n_calibration_for_stress": 0,
                 "n_low_distance": 0,
                 "max_distance_cutoff": np.nan if max_distance is None else max_distance,
                 "distance_backend": distance_backend,
@@ -1167,8 +1252,19 @@ class Conformal:
         distances = raw_distances / history_length
 
         n_low_distance = int(np.sum(distances <= low_distance_threshold))
-        stress = (target_low_distance_count - n_low_distance) / target_low_distance_count
-        stress = float(np.clip(stress, 0.0, 1.0))
+        express_n_calibration_for_stress = np.nan
+        if stress_count_source == "express_calibration":
+            express_n_calibration_for_stress = int(len(self.express(score_t, current_bounds)))
+            stress_count = express_n_calibration_for_stress
+        else:
+            stress_count = n_low_distance
+        stress = self.adaptive_weighted_express_stress_from_count(
+            stress_count,
+            target_low_distance_count=target_low_distance_count,
+            stress_mode=stress_mode,
+            stress_midpoint_count=stress_midpoint_count,
+            stress_slope=stress_slope,
+        )
         lambda_t = float(lambda_max ** (1.0 - stress) * lambda_min ** stress)
 
         raw_weights = np.exp(-lambda_t * distances)
@@ -1193,6 +1289,12 @@ class Conformal:
             "lambda_max": float(lambda_max),
             "lambda_t": float(lambda_t),
             "stress": float(stress),
+            "stress_mode": stress_mode,
+            "stress_midpoint_count": int(stress_midpoint_count),
+            "stress_slope": float(stress_slope),
+            "stress_count_source": stress_count_source,
+            "stress_count": int(stress_count),
+            "express_n_calibration_for_stress": express_n_calibration_for_stress,
             "n_low_distance": int(n_low_distance),
             "max_distance_cutoff": np.nan if max_distance is None else float(max_distance),
             "distance_backend": distance_backend,
@@ -1340,6 +1442,10 @@ class Conformal:
         weighted_express_debug=False,
         adaptive_weighted_express_low_distance_threshold=0.01,
         adaptive_weighted_express_target_low_distance_count=6,
+        adaptive_weighted_express_stress_mode="linear",
+        adaptive_weighted_express_stress_midpoint_count=6,
+        adaptive_weighted_express_stress_slope=0.8,
+        adaptive_weighted_express_stress_count_source="low_distance",
         adaptive_weighted_express_lambda_min=35.0,
         adaptive_weighted_express_lambda_max=300.0,
         adaptive_weighted_express_max_distance=1.0,
@@ -1464,6 +1570,10 @@ class Conformal:
                 current_bounds,
                 low_distance_threshold=adaptive_weighted_express_low_distance_threshold,
                 target_low_distance_count=adaptive_weighted_express_target_low_distance_count,
+                stress_mode=adaptive_weighted_express_stress_mode,
+                stress_midpoint_count=adaptive_weighted_express_stress_midpoint_count,
+                stress_slope=adaptive_weighted_express_stress_slope,
+                stress_count_source=adaptive_weighted_express_stress_count_source,
                 lambda_min=adaptive_weighted_express_lambda_min,
                 lambda_max=adaptive_weighted_express_lambda_max,
                 max_distance=adaptive_weighted_express_max_distance,
@@ -1489,6 +1599,30 @@ class Conformal:
                 "adaptive_weighted_express_lambda_max": diagnostics.get("lambda_max", np.nan),
                 "adaptive_weighted_express_lambda_t": diagnostics.get("lambda_t", np.nan),
                 "adaptive_weighted_express_stress": diagnostics.get("stress", np.nan),
+                "adaptive_weighted_express_stress_mode": diagnostics.get(
+                    "stress_mode",
+                    np.nan,
+                ),
+                "adaptive_weighted_express_stress_midpoint_count": diagnostics.get(
+                    "stress_midpoint_count",
+                    np.nan,
+                ),
+                "adaptive_weighted_express_stress_slope": diagnostics.get(
+                    "stress_slope",
+                    np.nan,
+                ),
+                "adaptive_weighted_express_stress_count_source": diagnostics.get(
+                    "stress_count_source",
+                    np.nan,
+                ),
+                "adaptive_weighted_express_stress_count": diagnostics.get(
+                    "stress_count",
+                    np.nan,
+                ),
+                "adaptive_weighted_express_express_n_calibration_for_stress": diagnostics.get(
+                    "express_n_calibration_for_stress",
+                    np.nan,
+                ),
                 "adaptive_weighted_express_n_low_distance": diagnostics.get(
                     "n_low_distance",
                     np.nan,
