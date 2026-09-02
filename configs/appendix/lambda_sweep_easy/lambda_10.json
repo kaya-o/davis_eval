@@ -1,0 +1,31 @@
+{
+  "experiment_name": "weighted_express_lambda_sweep",
+  "n_runs": 100,
+  "seed": 42,
+  "data": {
+    "path": "data/davis_other_data_models.csv",
+    "n_off": 500,
+    "n_on": 20000,
+    "label_column": "Label"
+  },
+  "selection": {
+    "score_column": "muhat_2",
+    "tau_1": 5.0,
+    "tau_0": 4000,
+    "window_width": 1
+  },
+  "prediction": {
+    "point_prediction_column": "muhat_1"
+  },
+  "conformal": {
+    "alpha": 0.4,
+    "randomized_calibration": true,
+    "express_distance": "hamming",
+    "weighted_express_lambda": 10,
+    "weighted_express_distance_normalization": "history_length",
+    "weighted_express_max_distance": null
+  },
+  "strategies": [
+    "WEIGHTED-EXPRESS"
+  ]
+}

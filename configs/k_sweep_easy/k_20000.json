@@ -1,0 +1,28 @@
+{
+  "experiment_name": "davis_muhat2_moving_window",
+  "n_runs": 100,
+  "seed": 42,
+  "data": {
+    "path": "data/davis_other_data_models.csv",
+    "n_off": 500,
+    "n_on": 20000,
+    "label_column": "Label"
+  },
+  "selection": {
+    "score_column": "muhat_2",
+    "tau_1": 5,
+    "tau_0": 4000,
+    "window_width": 1
+  },
+  "prediction": {
+    "point_prediction_column": "muhat_1"
+  },
+  "conformal": {
+    "alpha": 0.4,
+    "randomized_calibration": true,
+    "k_express": 20000
+  },
+  "strategies": [
+    "K-EXPRESS"
+  ]
+}

@@ -1,0 +1,29 @@
+{
+  "experiment_name": "finite_express_delta_sweep_difficult",
+  "n_runs": 100,
+  "seed": 42,
+  "data": {
+    "path": "data/davis_other_data_models.csv",
+    "n_off": 500,
+    "n_on": 20000,
+    "label_column": "Label"
+  },
+  "selection": {
+    "score_column": "muhat_2",
+    "tau_1": 5.0,
+    "tau_0": 2000,
+    "window_width": 1
+  },
+  "prediction": {
+    "point_prediction_column": "muhat_1"
+  },
+  "conformal": {
+    "alpha": 0.1,
+    "randomized_calibration": true,
+    "finite_express_target_size": null,
+    "finite_express_rank_delta": 0.005
+  },
+  "strategies": [
+    "FINITE-EXPRESS"
+  ]
+}

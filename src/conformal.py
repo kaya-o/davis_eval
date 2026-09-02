@@ -1,0 +1,2163 @@
+import csv
+import json
+import shutil
+from datetime import datetime
+from pathlib import Path
+import numpy as np
+
+TAU_1 = 5.0
+TAU_0 = 4000 #2250
+
+WINDOW_WIDTH = 0.5 #1
+ALPHA = 0.4
+USE_RANDOMIZED_CALIBRATION = True
+
+
+def compute_relaxed_point_coverage_gap_bound(m, b, alpha):
+    """
+    Compute the distribution-free relaxed-point coverage-gap diagnostic for a
+    calibration set with m exact points and b added non-exact points.
+    """
+    def as_nonnegative_int(value, name):
+        if isinstance(value, (bool, np.bool_)) or isinstance(value, (str, bytes)):
+            raise ValueError(f"{name} must be an integer-like nonnegative value")
+        try:
+            numeric_value = float(value)
+        except (TypeError, ValueError) as exc:
+            raise ValueError(f"{name} must be an integer-like nonnegative value") from exc
+        if (
+            not np.isfinite(numeric_value)
+            or not numeric_value.is_integer()
+            or numeric_value < 0
+        ):
+            raise ValueError(f"{name} must be an integer-like nonnegative value")
+        return int(numeric_value)
+
+    m = as_nonnegative_int(m, "m")
+    b = as_nonnegative_int(b, "b")
+
+    try:
+        alpha = float(alpha)
+    except (TypeError, ValueError) as exc:
+        raise ValueError("alpha must satisfy 0 < alpha < 1") from exc
+    if not np.isfinite(alpha) or not 0 < alpha < 1:
+        raise ValueError("alpha must satisfy 0 < alpha < 1")
+
+    n = m + b
+    k_prime = int(np.ceil((1.0 - alpha) * (n + 1)))
+    effective_exact_rank_cutoff_raw = k_prime - b
+    effective_exact_rank_cutoff = max(0, min(m + 1, effective_exact_rank_cutoff_raw))
+    coverage_lower_bound = effective_exact_rank_cutoff / (m + 1)
+    miscoverage_upper_bound = 1.0 - coverage_lower_bound
+    coverage_gap_bound = (1.0 - alpha) - coverage_lower_bound
+    coverage_gap_bound_positive = max(0.0, coverage_gap_bound)
+    coverage_gap_bound_simple = alpha * b / (m + 1)
+    b_over_m_plus_1 = b / (m + 1)
+    bound_vacuous = effective_exact_rank_cutoff <= 0
+
+    return {
+        "bound_alpha": float(alpha),
+        "bound_nominal_coverage": float(1.0 - alpha),
+        "bound_m": int(m),
+        "bound_b": int(b),
+        "bound_total_size": int(m + b),
+        "bound_k_prime": int(k_prime),
+        "bound_effective_exact_rank_cutoff_raw": int(effective_exact_rank_cutoff_raw),
+        "bound_effective_exact_rank_cutoff": int(effective_exact_rank_cutoff),
+        "bound_coverage_lower": float(coverage_lower_bound),
+        "bound_miscoverage_upper": float(miscoverage_upper_bound),
+        "bound_gap": float(coverage_gap_bound),
+        "bound_gap_positive": float(coverage_gap_bound_positive),
+        "bound_gap_simple": float(coverage_gap_bound_simple),
+        "bound_b_over_m_plus_1": float(b_over_m_plus_1),
+        "bound_vacuous": bool(bound_vacuous),
+    }
+
+
+COVERAGE_GAP_BOUND_DIAGNOSTIC_KEYS = (
+    "bound_alpha",
+    "bound_nominal_coverage",
+    "bound_m",
+    "bound_b",
+    "bound_total_size",
+    "bound_k_prime",
+    "bound_effective_exact_rank_cutoff_raw",
+    "bound_effective_exact_rank_cutoff",
+    "bound_coverage_lower",
+    "bound_miscoverage_upper",
+    "bound_gap",
+    "bound_gap_positive",
+    "bound_gap_simple",
+    "bound_b_over_m_plus_1",
+    "bound_vacuous",
+)
+
+
+def coverage_gap_bound_fieldnames(prefix):
+    return [f"{prefix}_{key}" for key in COVERAGE_GAP_BOUND_DIAGNOSTIC_KEYS]
+
+
+def coverage_gap_bound_result_fields(prefix, diagnostics, source_prefix=None):
+    fields = {}
+    for key in COVERAGE_GAP_BOUND_DIAGNOSTIC_KEYS:
+        source_key = f"{source_prefix}_{key}" if source_prefix else key
+        fields[f"{prefix}_{key}"] = diagnostics.get(source_key, np.nan)
+    return fields
+
+
+def dump_experiment_results(
+    results,
+    raw_rows,
+    selected_point_rows,
+    n_runs,
+    output_root="results",
+    run_name=None,
+    config_path=None,
+    resolved_config=None,
+):
+    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+    output_dir_name = f"{timestamp}_{run_name}" if run_name else f"{timestamp}_{n_runs}_runs"
+    output_dir = Path(output_root) / output_dir_name
+    output_dir.mkdir(parents=True, exist_ok=True)
+
+    if config_path is not None:
+        shutil.copyfile(config_path, output_dir / "config.json")
+
+    if resolved_config is not None:
+        with (output_dir / "resolved_config.json").open("w") as f:
+            json.dump(resolved_config, f, indent=2, sort_keys=True)
+
+    aggregate_path = output_dir / "aggregate_results.csv"
+    raw_path = output_dir / "raw_selected_events.csv"
+    selected_points_path = output_dir / "selected_datapoints.csv"
+
+    aggregate_fieldnames = [
+        "strategy",
+        "selected",
+        "miscovered",
+        "miscoverage",
+        "avg_n_calibration",
+        "median_interval_length",
+        "infinite_fraction",
+    ]
+
+    with aggregate_path.open("w", newline="") as f:
+        writer = csv.DictWriter(f, fieldnames=aggregate_fieldnames)
+        writer.writeheader()
+
+        for strategy, strategy_results in results.items():
+            selected = strategy_results["selected"]
+            if selected == 0:
+                writer.writerow({
+                    "strategy": strategy,
+                    "selected": 0,
+                    "miscovered": 0,
+                    "miscoverage": np.nan,
+                    "avg_n_calibration": np.nan,
+                    "median_interval_length": np.nan,
+                    "infinite_fraction": np.nan,
+                })
+                continue
+
+            writer.writerow({
+                "strategy": strategy,
+                "selected": selected,
+                "miscovered": strategy_results["miscovered"],
+                "miscoverage": strategy_results["miscovered"] / selected,
+                "avg_n_calibration": np.mean(strategy_results["n_calibration"]),
+                "median_interval_length": np.median(strategy_results["interval_length"]),
+                "infinite_fraction": strategy_results["infinite_interval"] / selected,
+            })
+
+    raw_fieldnames = [
+        "run",
+        "t",
+        "strategy",
+        "miscovered",
+        "n_calibration",
+        "interval_length",
+        "buffer",
+        "score_t",
+        "sum_s_past",
+        "selection_lower_bound",
+        "selection_upper_bound",
+
+        "random_requested_size",
+        "random_n_candidates_total",
+        "random_chosen_size",
+
+        "cap_n_candidates_total",
+        "cap_n_offline_candidates",
+        "cap_n_online_candidates",
+        "cap_n_current_selected_online",
+        "cap_n_current_selected_candidates",
+        "cap_history_match_count",
+        "cap_chosen_size",
+        "cap_offline_chosen",
+        "cap_online_chosen",
+        "cap_inner_constraint_count",
+
+        "finite_express_exact_matches",
+        "finite_express_chosen_size",
+        "finite_express_target_size",
+        "finite_express_distance_backend",
+        "finite_express_max_distance",
+        "finite_express_mean_distance",
+        "finite_express_relaxation_needed",
+        "finite_express_added_nonexact",
+        *coverage_gap_bound_fieldnames("finite_express"),
+
+        "relaxed_express_max_distance",
+        "relaxed_express_distance_backend",
+        "relaxed_express_n_candidates_total",
+        "relaxed_express_chosen_size",
+        "relaxed_express_exact_matches",
+        "relaxed_express_max_chosen_distance",
+        "relaxed_express_mean_chosen_distance",
+        "relaxed_express_median_chosen_distance",
+        "relaxed_express_min_distance",
+        "relaxed_express_median_distance",
+        "relaxed_express_mean_distance",
+        "relaxed_express_max_distance_observed",
+        *coverage_gap_bound_fieldnames("relaxed_express"),
+
+        "weighted_express_lambda",
+        "weighted_express_distance_backend",
+        "weighted_express_distance_normalization",
+        "weighted_express_max_distance_cutoff",
+        "weighted_express_max_rank_pct",
+        "weighted_express_n_candidates_total",
+        "weighted_express_n_positive_weights",
+        "weighted_express_positive_weight_fraction",
+        "weighted_express_sum_positive_weights",
+        "weighted_express_sum_raw_weights",
+        "weighted_express_finite_mass",
+        "weighted_express_test_mass",
+        "weighted_express_min_distance",
+        "weighted_express_median_distance",
+        "weighted_express_mean_distance",
+        "weighted_express_max_distance",
+        "weighted_express_min_weight",
+        "weighted_express_median_weight",
+        "weighted_express_mean_weight",
+        "weighted_express_max_weight",
+        "weighted_express_n_eff",
+        "weighted_express_n_eff_finite",
+        "weighted_express_weighted_mean_distance",
+        "weighted_express_stress",
+        "weighted_express_infinite",
+
+        "adaptive_weighted_express_low_distance_threshold",
+        "adaptive_weighted_express_target_low_distance_count",
+        "adaptive_weighted_express_lambda_min",
+        "adaptive_weighted_express_lambda_max",
+        "adaptive_weighted_express_lambda_t",
+        "adaptive_weighted_express_stress",
+        "adaptive_weighted_express_stress_mode",
+        "adaptive_weighted_express_stress_midpoint_count",
+        "adaptive_weighted_express_stress_slope",
+        "adaptive_weighted_express_stress_count_source",
+        "adaptive_weighted_express_stress_count",
+        "adaptive_weighted_express_express_n_calibration_for_stress",
+        "adaptive_weighted_express_n_low_distance",
+        "adaptive_weighted_express_max_distance_cutoff",
+        "adaptive_weighted_express_distance_backend",
+        "adaptive_weighted_express_n_candidates_total",
+        "adaptive_weighted_express_n_positive_weights",
+        "adaptive_weighted_express_positive_weight_fraction",
+        "adaptive_weighted_express_sum_positive_weights",
+        "adaptive_weighted_express_sum_raw_weights",
+        "adaptive_weighted_express_finite_mass",
+        "adaptive_weighted_express_test_mass",
+        "adaptive_weighted_express_min_distance",
+        "adaptive_weighted_express_median_distance",
+        "adaptive_weighted_express_mean_distance",
+        "adaptive_weighted_express_max_distance",
+        "adaptive_weighted_express_min_weight",
+        "adaptive_weighted_express_median_weight",
+        "adaptive_weighted_express_mean_weight",
+        "adaptive_weighted_express_max_weight",
+        "adaptive_weighted_express_n_eff",
+        "adaptive_weighted_express_n_eff_finite",
+        "adaptive_weighted_express_weighted_mean_distance",
+        "adaptive_weighted_express_stress_weighted_distance",
+        "adaptive_weighted_express_infinite",
+
+        "weighted_neighborhood_express_lambda",
+        "weighted_neighborhood_express_distance_backend",
+        "weighted_neighborhood_express_distance_normalization",
+        "weighted_neighborhood_express_max_distance_cutoff",
+        "weighted_neighborhood_express_max_rank_pct",
+        "weighted_neighborhood_express_max_neighbors",
+        "weighted_neighborhood_express_n_candidates_total",
+        "weighted_neighborhood_express_n_after_neighbor_cap",
+        "weighted_neighborhood_express_neighbor_cap_active",
+        "weighted_neighborhood_express_neighbor_cap_boundary_distance",
+        "weighted_neighborhood_express_n_positive_weights",
+        "weighted_neighborhood_express_positive_weight_fraction",
+        "weighted_neighborhood_express_sum_positive_weights",
+        "weighted_neighborhood_express_sum_raw_weights",
+        "weighted_neighborhood_express_finite_mass",
+        "weighted_neighborhood_express_test_mass",
+        "weighted_neighborhood_express_min_distance",
+        "weighted_neighborhood_express_median_distance",
+        "weighted_neighborhood_express_mean_distance",
+        "weighted_neighborhood_express_max_distance",
+        "weighted_neighborhood_express_min_weight",
+        "weighted_neighborhood_express_median_weight",
+        "weighted_neighborhood_express_mean_weight",
+        "weighted_neighborhood_express_max_weight",
+        "weighted_neighborhood_express_n_eff",
+        "weighted_neighborhood_express_n_eff_finite",
+        "weighted_neighborhood_express_weighted_mean_distance",
+        "weighted_neighborhood_express_stress",
+        "weighted_neighborhood_express_infinite",
+    ]
+
+    with raw_path.open("w", newline="") as f:
+        writer = csv.DictWriter(f, fieldnames=raw_fieldnames)
+        writer.writeheader()
+        writer.writerows(raw_rows)
+
+    selected_point_fieldnames = [
+        "run",
+        "t",
+        "score_t",
+        "residual_t",
+        "selection_lower_bound",
+        "selection_upper_bound",
+    ]
+
+    with selected_points_path.open("w", newline="") as f:
+        writer = csv.DictWriter(f, fieldnames=selected_point_fieldnames)
+        writer.writeheader()
+        writer.writerows(selected_point_rows)
+
+    return output_dir
+
+class Conformal:
+    def __init__(
+        self,
+        tau_0=TAU_0,
+        tau_1=TAU_1,
+        window_width=WINDOW_WIDTH,
+        alpha=ALPHA,
+        randomized_calibration=USE_RANDOMIZED_CALIBRATION,
+        random_seed=None,
+    ):
+        self.tau_0 = tau_0
+        self.tau_1 = tau_1
+        self.window_width = window_width
+        self.alpha = alpha
+        self.randomized_calibration = randomized_calibration
+
+        self.x_off = np.array([])
+        self.y_off = np.array([])
+        self.scores_off = np.array([])
+        self.point_predictions_off = np.array([])
+        self.residuals_off = np.array([])
+
+        # All online points: scores, selection decisions, and the rule used at arrival.
+        self.scores_past = np.array([])
+        self.s_past = np.array([])
+        self.bounds_past = np.array([])
+        self.bounds_past_lower = np.array([])
+        self.residuals_past = np.array([])
+
+        # Labeled online points only: safe for calibration.
+        self.selected_scores_past = np.array([])
+        self.selected_y_past = np.array([])
+        self.selected_point_predictions_past = np.array([])
+        self.selected_residuals_past = np.array([])
+        self.selected_bounds_past = np.array([])
+        self.selected_bounds_past_lower = np.array([])
+        self.selected_history_indices = np.array([], dtype=int)
+
+        self.rng = np.random.default_rng(random_seed)
+        self._express_cache_key = None
+        self._express_cache_value = None
+        self._cap_cache_key = None
+        self._cap_cache_value = None
+        self._cap_cache_diagnostics = None
+        self._cap_last_diagnostics = None
+        self._finite_express_last_diagnostics = None
+        self._relaxed_express_last_diagnostics = None
+        self._weighted_express_last_diagnostics = None
+        self._adaptive_weighted_express_last_diagnostics = None
+        self._weighted_neighborhood_express_last_diagnostics = None
+
+    def selected_count(self, j=None):
+        past = self.s_past if j is None else self.s_past[:j]
+        return float(np.sum(past))
+
+    def selection_bound_lower(self, j, tau_0=None, tau_1=None):
+        return self.selection_threshold(j, tau_0=tau_0, tau_1=tau_1)
+
+    def selection_bound(self, j, tau_0=None, tau_1=None, window_width=None):
+        lower = self.selection_threshold(j, tau_0=tau_0, tau_1=tau_1)
+        window_width = self.window_width if window_width is None else window_width
+        return lower + window_width
+
+    def selection_threshold(self, j, tau_0=None, tau_1=None):
+        tau_0 = self.tau_0 if tau_0 is None else tau_0
+        tau_1 = self.tau_1 if tau_1 is None else tau_1
+        n_selected = self.selected_count(j)
+        return tau_1 + (n_selected / tau_0)
+
+    def selection_bounds(self, j, tau_0=None, tau_1=None, window_width=None):
+        window_width = self.window_width if window_width is None else window_width
+        lower = self.selection_bound_lower(j, tau_0=tau_0, tau_1=tau_1)
+        upper = lower + window_width
+        return lower, upper
+
+    def select_at_bound(self, score, bound):
+        return self.select_at_bounds(score, (-np.inf, bound))
+
+    def select_at_bounds(self, score, bounds):
+        lower, upper = bounds
+        score = np.asarray(score)
+        return (score >= lower) & (score <= upper)
+
+    def select_past(self, score, j):
+        bounds = (self.bounds_past_lower[j], self.bounds_past[j])
+        return int(self.select_at_bounds(score, bounds))
+
+    def select_t(self, score, j=None):
+        t = len(self.scores_past) if j is None else j
+        return int(self.select_at_bounds(score, self.selection_bounds(t)))
+
+    def same_selection_signature(self, candidate_scores, score_t, lower_bounds, upper_bounds):
+        # this is slow because it builds 2d matrix for each time t
+        candidate_scores = np.asarray(candidate_scores)
+        lower_bounds = np.asarray(lower_bounds)
+        upper_bounds = np.asarray(upper_bounds)
+        if lower_bounds.size == 0:
+            return np.ones(candidate_scores.shape[0], dtype=bool)
+
+        candidate_signature = self.select_at_bounds(
+            candidate_scores.reshape(-1, 1),
+            (lower_bounds.reshape(1, -1), upper_bounds.reshape(1, -1)),
+        )
+        test_signature = self.select_at_bounds(
+            np.asarray([score_t]).reshape(-1, 1),
+            (lower_bounds.reshape(1, -1), upper_bounds.reshape(1, -1)),
+        )
+        return np.all(candidate_signature == test_signature, axis=1)
+    
+    def same_selection_signature_fast(self, candidate_scores, score_t, lower_bounds, upper_bounds):
+        # this is faster hopefully
+        candidate_scores = np.asarray(candidate_scores)
+        lower_bounds = np.asarray(lower_bounds)
+        upper_bounds = np.asarray(upper_bounds)
+
+        if lower_bounds.size == 0:
+            return np.ones(candidate_scores.shape[0], dtype=bool)
+
+        # Bounds are nondecreasing. A score's selection signature is the
+        # contiguous time interval where lower <= score <= upper.
+        candidate_start = np.searchsorted(upper_bounds, candidate_scores, side="left")
+        candidate_end = np.searchsorted(lower_bounds, candidate_scores, side="right")
+        test_start = np.searchsorted(upper_bounds, score_t, side="left")
+        test_end = np.searchsorted(lower_bounds, score_t, side="right")
+
+        return (candidate_start == test_start) & (candidate_end == test_end)
+
+    def signature_distance_fast(self, candidate_scores, score_t, lower_bounds, upper_bounds):
+        candidate_scores = np.asarray(candidate_scores)
+        lower_bounds = np.asarray(lower_bounds)
+        upper_bounds = np.asarray(upper_bounds)
+
+        if lower_bounds.size == 0:
+            return np.zeros(candidate_scores.shape[0], dtype=int)
+
+        # Keep this convention in sync with same_selection_signature_fast:
+        # distance zero is exactly the EXPRESS signature match.
+        candidate_start = np.searchsorted(upper_bounds, candidate_scores, side="left")
+        candidate_end = np.searchsorted(lower_bounds, candidate_scores, side="right")
+        test_start = np.searchsorted(upper_bounds, score_t, side="left")
+        test_end = np.searchsorted(lower_bounds, score_t, side="right")
+
+        return np.abs(candidate_start - test_start) + np.abs(candidate_end - test_end)
+
+    def signature_distance_hamming(self, candidate_scores, score_t, lower_bounds, upper_bounds):
+        candidate_scores = np.asarray(candidate_scores)
+        lower_bounds = np.asarray(lower_bounds)
+        upper_bounds = np.asarray(upper_bounds)
+
+        if lower_bounds.size == 0:
+            return np.zeros(candidate_scores.shape[0], dtype=int)
+
+        # This computes exact Hamming distance between full binary selection
+        # signatures using the interval representation induced by the monotone
+        # moving-band selection rule. It is not endpoint L1 distance; it is the
+        # symmetric difference size between two interval signatures.
+        candidate_start = np.searchsorted(upper_bounds, candidate_scores, side="left")
+        candidate_end = np.searchsorted(lower_bounds, candidate_scores, side="right")
+        test_start = np.searchsorted(upper_bounds, score_t, side="left")
+        test_end = np.searchsorted(lower_bounds, score_t, side="right")
+
+        candidate_len = candidate_end - candidate_start
+        test_len = test_end - test_start
+
+        overlap_start = np.maximum(candidate_start, test_start)
+        overlap_end = np.minimum(candidate_end, test_end)
+        overlap_len = np.maximum(0, overlap_end - overlap_start)
+
+        return candidate_len + test_len - 2 * overlap_len
+
+    def signature_distance_hamming_slow(self, candidate_scores, score_t, lower_bounds, upper_bounds):
+        candidate_scores = np.asarray(candidate_scores)
+        lower_bounds = np.asarray(lower_bounds)
+        upper_bounds = np.asarray(upper_bounds)
+
+        if lower_bounds.size == 0:
+            return np.zeros(candidate_scores.shape[0], dtype=int)
+
+        candidate_signature = self.select_at_bounds(
+            candidate_scores.reshape(-1, 1),
+            (lower_bounds.reshape(1, -1), upper_bounds.reshape(1, -1)),
+        )
+        test_signature = self.select_at_bounds(
+            np.asarray([score_t]).reshape(-1, 1),
+            (lower_bounds.reshape(1, -1), upper_bounds.reshape(1, -1)),
+        )[0]
+
+        return np.sum(candidate_signature != test_signature.reshape(1, -1), axis=1)
+
+    def signature_distance(
+        self,
+        candidate_scores,
+        score_t,
+        lower_bounds,
+        upper_bounds,
+        distance_backend="endpoint",
+    ):
+        # Endpoint distance compares compressed interval endpoints of the selection
+        # signature. Hamming distance compares full binary counterfactual
+        # selection signatures directly; it is slower but more general.
+        if distance_backend == "endpoint":
+            return self.signature_distance_fast(
+                candidate_scores,
+                score_t,
+                lower_bounds,
+                upper_bounds,
+            )
+        if distance_backend == "hamming":
+            return self.signature_distance_hamming(
+                candidate_scores,
+                score_t,
+                lower_bounds,
+                upper_bounds,
+            )
+        raise ValueError(
+            "express_distance must be one of ['endpoint', 'hamming'], "
+            f"got {distance_backend!r}"
+        )
+
+    def min_calibration_size_for_no_infinity(self, alpha=None):
+        alpha = self.alpha if alpha is None else alpha
+        return int(np.ceil((1.0 / alpha) - 1.0))
+
+    # With m calibration scores, the empirical conformal rank grid has spacing
+    # approximately 1 / (m + 1). This helper returns the minimum m needed to make
+    # that spacing at most delta.
+    def min_calibration_size_for_rank_resolution(self, delta):
+        if delta is None:
+            return None
+        if delta <= 0 or delta > 1:
+            raise ValueError(f"delta must be in (0, 1], got {delta}")
+        return int(np.ceil((1.0 / delta) - 1.0))
+
+    def finite_express_target_size_from_delta(self, delta, alpha=None):
+        no_infinity = self.min_calibration_size_for_no_infinity(alpha=alpha)
+        if delta is None:
+            return no_infinity
+        resolution = self.min_calibration_size_for_rank_resolution(delta)
+        return max(no_infinity, resolution)
+
+    def quantile_threshold(self, calibration_scores, alpha=None):
+        alpha = self.alpha if alpha is None else alpha
+        if len(calibration_scores) == 0:
+            return np.inf
+
+        calibration_scores = np.asarray(calibration_scores)
+        n = len(calibration_scores)
+
+        quantile_idx = int(np.ceil((n + 1) * (1 - alpha))) - 1
+
+        if quantile_idx >= n:
+            return np.inf
+
+        return np.partition(calibration_scores, quantile_idx)[quantile_idx]
+
+    def randomized_quantile_threshold(self, calibration_scores, alpha=None):
+        alpha = self.alpha if alpha is None else alpha
+        xi = self.rng.uniform(0.0, 1.0)
+        n = len(calibration_scores)
+
+        if n == 0:
+            return np.inf if xi > alpha else -np.inf
+
+        calibration_scores = np.asarray(calibration_scores)
+
+        required_strictly_greater = int(np.floor(alpha * (n + 1) - xi)) + 1
+
+        if required_strictly_greater <= 0:
+            return np.inf
+
+        if required_strictly_greater > n:
+            return -np.inf
+
+        quantile_idx = n - required_strictly_greater
+        return np.partition(calibration_scores, quantile_idx)[quantile_idx]
+
+    def calibration_threshold(self, calibration_scores, alpha=None):
+        alpha = self.alpha if alpha is None else alpha
+        if self.randomized_calibration:
+            return self.randomized_quantile_threshold(calibration_scores, alpha=alpha)
+        return self.quantile_threshold(calibration_scores, alpha=alpha)
+
+    def weighted_quantile_threshold(self, calibration_scores, raw_weights, alpha=None):
+        alpha = self.alpha if alpha is None else alpha
+        if not 0 < alpha < 1:
+            raise ValueError(f"alpha must be in (0, 1), got {alpha}")
+
+        calibration_scores = np.asarray(calibration_scores, dtype=float)
+        raw_weights = np.asarray(raw_weights, dtype=float)
+
+        if len(calibration_scores) != len(raw_weights):
+            raise ValueError("calibration_scores and raw_weights must have the same length")
+        if len(calibration_scores) == 0:
+            return np.inf
+        if not np.all(np.isfinite(calibration_scores)):
+            raise ValueError("Weighted EXPRESS calibration scores must be finite")
+        if not np.all(np.isfinite(raw_weights)) or np.any(raw_weights < 0):
+            raise ValueError("Weighted EXPRESS raw weights must be finite and nonnegative")
+
+        denom = 1.0 + np.sum(raw_weights)
+        normalized_weights = raw_weights / denom
+
+        order = np.argsort(calibration_scores, kind="stable")
+        values = np.concatenate([calibration_scores[order], [np.inf]])
+        masses = np.concatenate([normalized_weights[order], [1.0 / denom]])
+
+        target = 1.0 - alpha
+        cumulative = np.cumsum(masses)
+        hit_idx = np.flatnonzero(cumulative >= target)
+
+        if len(hit_idx) == 0:
+            return np.inf
+        return values[hit_idx[0]]
+
+    def normalize_weighted_express_distances(self, distances, normalization, history_length):
+        normalization = "history_length" if normalization is None else normalization
+        distances = np.asarray(distances, dtype=float)
+
+        if normalization == "none":
+            return distances
+        if normalization == "history_length":
+            return distances / max(int(history_length), 1)
+        if normalization == "rank":
+            if len(distances) == 0:
+                return distances
+            unique_values = np.unique(distances)
+            if len(unique_values) == 1:
+                return np.zeros(len(distances), dtype=float)
+            level_lookup = {value: rank for rank, value in enumerate(unique_values)}
+            ranks = np.asarray([level_lookup[value] for value in distances], dtype=float)
+            return ranks / (len(unique_values) - 1)
+
+        raise ValueError(
+            "weighted_express_distance_normalization must be one of "
+            f"['rank', 'history_length', 'none'], got {normalization!r}"
+        )
+
+    def interval_length_from_threshold(self, threshold):
+        if np.isposinf(threshold):
+            return np.inf
+        if np.isneginf(threshold):
+            return 0.0
+        return 2 * threshold
+
+    # Calibration strategies
+    def full(self):
+        return np.concatenate([self.residuals_off, self.residuals_past])
+
+    def random(self, target_size, rng=None):
+        rng = self.rng if rng is None else rng
+        if target_size is None:
+            raise ValueError("random_calibration_size must be provided for RANDOM")
+
+        requested_size = int(target_size)
+        if requested_size < 0:
+            raise ValueError("random_calibration_size must be nonnegative")
+
+        candidate_residuals = np.concatenate([self.residuals_off, self.residuals_past])
+        n_candidates = len(candidate_residuals)
+        chosen_size = min(requested_size, n_candidates)
+
+        if chosen_size == n_candidates:
+            selected_residuals = candidate_residuals
+        elif chosen_size == 0:
+            selected_residuals = candidate_residuals[:0]
+        else:
+            selected_idx = rng.choice(n_candidates, size=chosen_size, replace=False)
+            selected_residuals = candidate_residuals[selected_idx]
+
+        return selected_residuals, {
+            "requested_size": requested_size,
+            "n_candidates_total": int(n_candidates),
+            "chosen_size": int(chosen_size),
+        }
+
+    def s_full(self, current_bounds):
+        candidate_residuals = np.concatenate([self.residuals_off, self.selected_residuals_past])
+        candidate_scores = np.concatenate([self.scores_off, self.selected_scores_past])
+        selected_mask = self.select_at_bounds(candidate_scores, current_bounds)
+        return candidate_residuals[selected_mask]
+
+    def s_fix(self, current_bounds):
+        selected_mask = self.select_at_bounds(self.scores_off, current_bounds)
+        return self.residuals_off[selected_mask]
+
+    # bao et al. 2024
+    def ada_off(self, current_bounds):
+        selected_mask = self.select_at_bounds(self.scores_off, current_bounds)
+        return self.residuals_off[selected_mask]
+
+    def ada_on(self, score_t, current_bounds):
+        current_mask = self.select_at_bounds(self.selected_scores_past, current_bounds)
+        test_selected_at_past_bounds = self.select_at_bounds(
+            score_t,
+            (self.selected_bounds_past_lower, self.selected_bounds_past),
+        )
+        history_match = test_selected_at_past_bounds
+        selected_mask = current_mask & history_match
+        return self.selected_residuals_past[selected_mask]
+
+    def cap(self, score_t, current_bounds):
+        """
+        Decision-driven CAP adaptive pick rule from Bao et al. Section 3.2.2, equation (5).
+
+        Full-holdout decision-driven CAP:
+            C_t = {s in H_t:
+                     Pi_t(X_s) = 1
+                     and Pi_i(X_s) = Pi_i(X_t) for every i in N_t_on},
+            where N_t_on = {0 <= i <= t-1 : Pi_t(X_i) = 1}.
+
+        This is not EXPRESS. EXPRESS checks agreement against all past online rules.
+        CAP checks agreement only against the past online rules whose historical points
+        would be selected by the current rule Pi_t.
+        """
+        current_lower, current_upper = current_bounds
+        cache_key = (
+            len(self.scores_off),
+            len(self.scores_past),
+            float(score_t),
+            float(current_lower),
+            float(current_upper),
+        )
+        if self._cap_cache_key == cache_key:
+            self._cap_last_diagnostics = self._cap_cache_diagnostics
+            return self._cap_cache_value
+
+        # Bao et al. decision-driven CAP uses the full holdout set
+        # (offline + all previous online points). Unlike EXPRESS, it matches only
+        # rules indexed by N_t_on = {i: Pi_t(X_i)=1}, plus the current rule.
+        candidate_residuals = np.concatenate([self.residuals_off, self.residuals_past])
+        candidate_scores = np.concatenate([self.scores_off, self.scores_past])
+
+        current_mask = self.select_at_bounds(candidate_scores, current_bounds)
+
+        n_offline = len(self.scores_off)
+        n_online_history = len(self.scores_past)
+
+        n_t_on_mask = self.select_at_bounds(self.scores_past, current_bounds)
+        n_t_on_count = int(np.sum(n_t_on_mask))
+
+        cap_lower_bounds = self.bounds_past_lower[n_t_on_mask]
+        cap_upper_bounds = self.bounds_past[n_t_on_mask]
+
+        history_match_mask = self.same_selection_signature_fast(
+            candidate_scores,
+            score_t,
+            cap_lower_bounds,
+            cap_upper_bounds,
+        )
+
+        selected_mask = current_mask & history_match_mask
+        selected_residuals = candidate_residuals[selected_mask]
+
+        diagnostics = {
+            "n_candidates_total": int(len(candidate_scores)),
+            "n_offline_candidates": int(n_offline),
+            "n_online_candidates": int(n_online_history),
+            "n_current_selected_online": int(n_t_on_count),
+            "n_current_selected_candidates": int(np.sum(current_mask)),
+            "history_match_count": int(np.sum(history_match_mask)),
+            "chosen_size": int(len(selected_residuals)),
+            "offline_chosen": int(np.sum(selected_mask[:n_offline])),
+            "online_chosen": int(np.sum(selected_mask[n_offline:])),
+            "inner_constraint_count": int(n_t_on_count),
+        }
+
+        self._cap_cache_key = cache_key
+        self._cap_cache_value = selected_residuals
+        self._cap_cache_diagnostics = diagnostics
+        self._cap_last_diagnostics = diagnostics
+        return selected_residuals
+
+    def express(self, score_t, current_bounds):
+        current_lower, current_upper = current_bounds
+        cache_key = (
+            len(self.scores_past),
+            len(self.selected_scores_past),
+            float(score_t),
+            float(current_lower),
+            float(current_upper),
+        )
+        if self._express_cache_key == cache_key:
+            return self._express_cache_value
+
+        candidate_residuals = np.concatenate([self.residuals_off, self.residuals_past])
+        candidate_scores = np.concatenate([self.scores_off, self.scores_past])
+        lower_bounds = np.append(self.bounds_past_lower, current_lower)
+        upper_bounds = np.append(self.bounds_past, current_upper)
+        selected_mask = self.same_selection_signature_fast(
+            candidate_scores,
+            score_t,
+            lower_bounds,
+            upper_bounds,
+        )
+        selected_residuals = candidate_residuals[selected_mask]
+        self._express_cache_key = cache_key
+        self._express_cache_value = selected_residuals
+        return selected_residuals
+
+    def finite_express(
+        self,
+        score_t,
+        current_bounds,
+        target_size=None,
+        rng=None,
+        distance_backend="hamming",
+    ):
+        """
+        Experimental finite-size variant of EXPRESS.
+
+        Uses all exact EXPRESS matches. If there are fewer than target_size
+        calibration points, adds nearest nonmatching signature points until
+        target_size is reached.
+
+        This intentionally departs from the EXPRESS exchangeability-preserving
+        condition and should be treated as a diagnostic strategy, not as a method
+        with the Sale-Ramdas validity guarantee.
+        """
+        current_lower, current_upper = current_bounds
+        rng = self.rng if rng is None else rng
+
+        candidate_residuals = np.concatenate([
+            self.residuals_off,
+            self.residuals_past,
+        ])
+        candidate_scores = np.concatenate([
+            self.scores_off,
+            self.scores_past,
+        ])
+
+        if target_size is None:
+            target_size = self.min_calibration_size_for_no_infinity()
+        requested_target_size = int(target_size)
+
+        if len(candidate_residuals) == 0:
+            bound_diagnostics = compute_relaxed_point_coverage_gap_bound(
+                0,
+                0,
+                self.alpha,
+            )
+            diagnostics = {
+                "exact_matches": 0,
+                "chosen_size": 0,
+                "added_nonexact": 0,
+                "target_size": requested_target_size,
+                "distance_backend": distance_backend,
+                "max_distance": np.nan,
+                "mean_distance": np.nan,
+                "relaxation_needed": False,
+            }
+            diagnostics.update(bound_diagnostics)
+            self._finite_express_last_diagnostics = diagnostics
+            return candidate_residuals
+
+        lower_bounds = np.append(self.bounds_past_lower, current_lower)
+        upper_bounds = np.append(self.bounds_past, current_upper)
+
+        distances = self.signature_distance(
+            candidate_scores,
+            score_t,
+            lower_bounds,
+            upper_bounds,
+            distance_backend=distance_backend,
+        )
+
+        target_size = min(requested_target_size, len(candidate_residuals))
+
+        exact_idx = np.flatnonzero(distances == 0)
+        exact_match_count = int(len(exact_idx))
+
+        if exact_match_count >= target_size:
+            # IMPORTANT: keep all exact EXPRESS matches, not only target_size of them.
+            chosen_idx = exact_idx
+            added_nonexact = 0
+        else:
+            needed = target_size - exact_match_count
+            nonexact_idx = np.flatnonzero(distances > 0)
+
+            if needed <= 0 or len(nonexact_idx) == 0:
+                added_idx = np.array([], dtype=int)
+            else:
+                nonexact_distances = distances[nonexact_idx]
+                boundary_distance = np.partition(nonexact_distances, needed - 1)[needed - 1]
+
+                strict_add_idx = nonexact_idx[nonexact_distances < boundary_distance]
+                boundary_idx = nonexact_idx[nonexact_distances == boundary_distance]
+
+                remaining = needed - len(strict_add_idx)
+
+                if remaining <= 0:
+                    sampled_boundary_idx = np.array([], dtype=int)
+                elif remaining >= len(boundary_idx):
+                    sampled_boundary_idx = boundary_idx
+                else:
+                    sampled_boundary_idx = rng.choice(
+                        boundary_idx,
+                        size=remaining,
+                        replace=False,
+                    )
+
+                added_idx = np.concatenate([strict_add_idx, sampled_boundary_idx])
+
+            chosen_idx = np.concatenate([exact_idx, added_idx])
+            added_nonexact = int(len(chosen_idx) - exact_match_count)
+
+        chosen_distances = distances[chosen_idx]
+        bound_diagnostics = compute_relaxed_point_coverage_gap_bound(
+            exact_match_count,
+            added_nonexact,
+            self.alpha,
+        )
+
+        diagnostics = {
+            "exact_matches": exact_match_count,
+            "chosen_size": int(len(chosen_idx)),
+            "added_nonexact": added_nonexact,
+            "target_size": requested_target_size,
+            "distance_backend": distance_backend,
+            "max_distance": float(np.max(chosen_distances)) if len(chosen_distances) else np.nan,
+            "mean_distance": float(np.mean(chosen_distances)) if len(chosen_distances) else np.nan,
+            "relaxation_needed": exact_match_count < target_size,
+        }
+        diagnostics.update(bound_diagnostics)
+        self._finite_express_last_diagnostics = diagnostics
+
+        return candidate_residuals[chosen_idx]
+
+    def relaxed_express(
+        self,
+        score_t,
+        current_bounds,
+        max_distance=0.02,
+        distance_backend="hamming",
+        debug=False,
+    ):
+        """
+        RELAXED-EXPRESS relaxes exact EXPRESS matching by replacing equality of
+        counterfactual selection signatures with a tolerance on normalized Hamming
+        disagreement. Unlike FINITE-EXPRESS, it does not force the calibration set to
+        reach a target size; therefore infinite intervals remain possible when there are
+        too few sufficiently similar calibration points. This is an empirical relaxation
+        and does not inherit the exact EXPRESS finite-sample guarantee.
+        """
+        del debug
+
+        if max_distance is not None:
+            max_distance = float(max_distance)
+            if max_distance < 0 or max_distance > 1:
+                raise ValueError("relaxed_express_max_distance must be in [0, 1]")
+
+        current_lower, current_upper = current_bounds
+
+        candidate_residuals = np.concatenate([
+            self.residuals_off,
+            self.residuals_past,
+        ])
+        candidate_scores = np.concatenate([
+            self.scores_off,
+            self.scores_past,
+        ])
+
+        requested_max_distance = max_distance
+
+        if len(candidate_residuals) == 0:
+            diagnostics = {
+                "max_distance": np.nan if requested_max_distance is None else requested_max_distance,
+                "distance_backend": distance_backend,
+                "n_candidates_total": 0,
+                "chosen_size": 0,
+                "exact_matches": 0,
+                "max_chosen_distance": np.nan,
+                "mean_chosen_distance": np.nan,
+                "median_chosen_distance": np.nan,
+                "min_distance": np.nan,
+                "median_distance": np.nan,
+                "mean_distance": np.nan,
+                "max_distance_observed": np.nan,
+            }
+            diagnostics.update(compute_relaxed_point_coverage_gap_bound(0, 0, self.alpha))
+            self._relaxed_express_last_diagnostics = diagnostics
+            return candidate_residuals
+
+        lower_bounds = np.append(self.bounds_past_lower, current_lower)
+        upper_bounds = np.append(self.bounds_past, current_upper)
+
+        raw_distances = self.signature_distance(
+            candidate_scores,
+            score_t,
+            lower_bounds,
+            upper_bounds,
+            distance_backend=distance_backend,
+        )
+        normalized_distances = raw_distances / max(len(lower_bounds), 1)
+
+        if requested_max_distance is None:
+            selected_mask = np.ones(len(candidate_residuals), dtype=bool)
+        else:
+            selected_mask = normalized_distances <= requested_max_distance
+
+        selected_residuals = candidate_residuals[selected_mask]
+        chosen_distances = normalized_distances[selected_mask]
+        selected_exact_matches = int(np.sum(selected_mask & (normalized_distances == 0)))
+        selected_nonexact_count = int(len(selected_residuals) - selected_exact_matches)
+        bound_diagnostics = compute_relaxed_point_coverage_gap_bound(
+            selected_exact_matches,
+            selected_nonexact_count,
+            self.alpha,
+        )
+
+        diagnostics = {
+            "max_distance": np.nan if requested_max_distance is None else requested_max_distance,
+            "distance_backend": distance_backend,
+            "n_candidates_total": int(len(candidate_residuals)),
+            "chosen_size": int(len(selected_residuals)),
+            "exact_matches": selected_exact_matches,
+            "max_chosen_distance": (
+                float(np.max(chosen_distances)) if len(chosen_distances) else np.nan
+            ),
+            "mean_chosen_distance": (
+                float(np.mean(chosen_distances)) if len(chosen_distances) else np.nan
+            ),
+            "median_chosen_distance": (
+                float(np.median(chosen_distances)) if len(chosen_distances) else np.nan
+            ),
+            "min_distance": float(np.min(normalized_distances)),
+            "median_distance": float(np.median(normalized_distances)),
+            "mean_distance": float(np.mean(normalized_distances)),
+            "max_distance_observed": float(np.max(normalized_distances)),
+        }
+        diagnostics.update(bound_diagnostics)
+        self._relaxed_express_last_diagnostics = diagnostics
+
+        return selected_residuals
+
+    def choose_nearest_indices_by_distance(self, distances, max_neighbors, rng=None):
+        rng = self.rng if rng is None else rng
+        distances = np.asarray(distances)
+        n = len(distances)
+
+        if max_neighbors is None or max_neighbors >= n:
+            return np.arange(n, dtype=int), np.nan, False
+
+        max_neighbors = int(max_neighbors)
+        if max_neighbors <= 0:
+            raise ValueError("max_neighbors must be positive or None")
+
+        boundary_distance = np.partition(distances, max_neighbors - 1)[max_neighbors - 1]
+
+        strict_idx = np.flatnonzero(distances < boundary_distance)
+        boundary_idx = np.flatnonzero(distances == boundary_distance)
+
+        remaining = max_neighbors - len(strict_idx)
+
+        if remaining <= 0:
+            sampled_boundary_idx = np.array([], dtype=int)
+        elif remaining >= len(boundary_idx):
+            sampled_boundary_idx = boundary_idx
+        else:
+            sampled_boundary_idx = rng.choice(
+                boundary_idx,
+                size=remaining,
+                replace=False,
+            )
+
+        chosen_idx = np.concatenate([strict_idx, sampled_boundary_idx])
+        return chosen_idx, boundary_distance, True
+
+    def weighted_express_core(
+        self,
+        score_t,
+        current_bounds,
+        lambda_=1.0,
+        distance_normalization="rank",
+        max_distance=None,
+        max_rank_pct=0.05,
+        max_neighbors=None,
+        distance_backend="endpoint",
+        debug=False,
+    ):
+        """
+        Empirical compact-support soft relaxation of EXPRESS.
+
+        This is inspired by weighted nonexchangeable conformal prediction, but
+        the weights depend on the current EXPRESS signature distance. It is not
+        a direct instantiation of a fixed-weight validity theorem.
+        """
+        del debug
+        lambda_ = float(lambda_)
+        if lambda_ < 0:
+            raise ValueError(f"weighted_express_lambda must be nonnegative, got {lambda_}")
+        if max_neighbors is not None:
+            max_neighbors = int(max_neighbors)
+            if max_neighbors <= 0:
+                raise ValueError("max_neighbors must be positive or None")
+        if max_rank_pct is not None:
+            max_rank_pct = float(max_rank_pct)
+            if max_rank_pct < 0 or max_rank_pct > 1:
+                raise ValueError(
+                    f"weighted_express_max_rank_pct must be in [0, 1], got {max_rank_pct}"
+                )
+        if max_distance is not None:
+            max_distance = float(max_distance)
+        cutoff = max_rank_pct if distance_normalization == "rank" else max_distance
+
+        current_lower, current_upper = current_bounds
+        candidate_residuals = np.concatenate([
+            self.residuals_off,
+            self.residuals_past,
+        ])
+        candidate_scores = np.concatenate([
+            self.scores_off,
+            self.scores_past,
+        ])
+        n_candidates_total = int(len(candidate_residuals))
+
+        if len(candidate_residuals) == 0:
+            diagnostics = {
+                "lambda": lambda_,
+                "distance_backend": distance_backend,
+                "distance_normalization": distance_normalization,
+                "max_distance_cutoff": np.nan if cutoff is None else cutoff,
+                "max_rank_pct": np.nan if max_rank_pct is None else max_rank_pct,
+                "max_neighbors": np.nan if max_neighbors is None else max_neighbors,
+                "n_candidates_total": n_candidates_total,
+                "n_after_neighbor_cap": 0,
+                "neighbor_cap_active": False,
+                "neighbor_cap_boundary_distance": np.nan,
+                "n_positive_weights": 0,
+                "positive_weight_fraction": 0.0,
+                "sum_positive_weights": 0.0,
+                "sum_raw_weights": 0.0,
+                "finite_mass": 0.0,
+                "test_mass": 1.0,
+                "min_distance": np.nan,
+                "median_distance": np.nan,
+                "mean_distance": np.nan,
+                "max_distance": np.nan,
+                "min_weight": np.nan,
+                "median_weight": np.nan,
+                "mean_weight": np.nan,
+                "max_weight": np.nan,
+                "n_eff": 0.0,
+                "n_eff_finite": 0.0,
+                "weighted_mean_distance": np.nan,
+                "stress": 0.0,
+                "infinite": True,
+            }
+            return np.inf, 0, diagnostics
+
+        lower_bounds = np.append(self.bounds_past_lower, current_lower)
+        upper_bounds = np.append(self.bounds_past, current_upper)
+        raw_distances = self.signature_distance(
+            candidate_scores,
+            score_t,
+            lower_bounds,
+            upper_bounds,
+            distance_backend=distance_backend,
+        )
+
+        # WEIGHTED-NEIGHBORHOOD-EXPRESS is a local-neighborhood variant of
+        # Weighted EXPRESS. It is intended for regimes where the signature
+        # distance becomes coarse and many candidates have low or zero distance.
+        # The max-neighbor cap prevents the weighted quantile from being flooded
+        # by too many low-distance candidates, while preserving the
+        # interpretation as a local weighted empirical residual distribution in
+        # signature space. This is an empirical relaxation and does not restore a
+        # finite-sample coverage guarantee.
+        chosen_idx, boundary_distance, cap_active = self.choose_nearest_indices_by_distance(
+            raw_distances,
+            max_neighbors,
+        )
+        candidate_residuals = candidate_residuals[chosen_idx]
+        candidate_scores = candidate_scores[chosen_idx]
+        raw_distances = raw_distances[chosen_idx]
+        del candidate_scores
+
+        distances = self.normalize_weighted_express_distances(
+            raw_distances,
+            distance_normalization,
+            history_length=len(lower_bounds),
+        )
+
+        raw_weights = np.exp(-lambda_ * distances)
+        if cutoff is not None:
+            raw_weights[distances > cutoff] = 0.0
+        buffer = self.weighted_quantile_threshold(candidate_residuals, raw_weights)
+
+        positive_weights = raw_weights > 0
+        n_positive_weights = int(np.sum(positive_weights))
+        sum_raw_weights = float(np.sum(raw_weights))
+        denom = 1.0 + sum_raw_weights
+        normalized_weights = raw_weights / denom
+        finite_weight_sum = float(np.sum(normalized_weights))
+        weight_square_sum = float(np.sum(normalized_weights ** 2))
+        weight_square_sum_raw = float(np.sum(raw_weights ** 2))
+
+        diagnostics = {
+            "lambda": lambda_,
+            "distance_backend": distance_backend,
+            "distance_normalization": distance_normalization,
+            "max_distance_cutoff": np.nan if cutoff is None else float(cutoff),
+            "max_rank_pct": np.nan if max_rank_pct is None else float(max_rank_pct),
+            "max_neighbors": np.nan if max_neighbors is None else max_neighbors,
+            "n_candidates_total": n_candidates_total,
+            "n_after_neighbor_cap": int(len(candidate_residuals)),
+            "neighbor_cap_active": bool(cap_active),
+            "neighbor_cap_boundary_distance": (
+                float(boundary_distance) if cap_active else np.nan
+            ),
+            "n_positive_weights": n_positive_weights,
+            "positive_weight_fraction": float(n_positive_weights / len(raw_weights)),
+            "sum_positive_weights": float(np.sum(raw_weights[positive_weights])),
+            "sum_raw_weights": sum_raw_weights,
+            "finite_mass": float(sum_raw_weights / denom),
+            "test_mass": float(1.0 / denom),
+            "min_distance": float(np.min(distances)),
+            "median_distance": float(np.median(distances)),
+            "mean_distance": float(np.mean(distances)),
+            "max_distance": float(np.max(distances)),
+            "min_weight": float(np.min(raw_weights)),
+            "median_weight": float(np.median(raw_weights)),
+            "mean_weight": float(np.mean(raw_weights)),
+            "max_weight": float(np.max(raw_weights)),
+            "n_eff": float(1.0 / weight_square_sum) if weight_square_sum > 0 else 0.0,
+            "n_eff_finite": (
+                float((sum_raw_weights ** 2) / weight_square_sum_raw)
+                if sum_raw_weights > 0 and weight_square_sum_raw > 0
+                else 0.0
+            ),
+            "weighted_mean_distance": (
+                float(np.sum(normalized_weights * distances) / finite_weight_sum)
+                if finite_weight_sum > 0
+                else np.nan
+            ),
+            "stress": float(np.sum(normalized_weights * distances)),
+            "infinite": bool(np.isinf(buffer)),
+        }
+        return buffer, n_positive_weights, diagnostics
+
+    def weighted_express(
+        self,
+        score_t,
+        current_bounds,
+        lambda_=1.0,
+        distance_normalization="rank",
+        max_distance=None,
+        max_rank_pct=0.05,
+        distance_backend="endpoint",
+        debug=False,
+    ):
+        buffer, n_positive_weights, diagnostics = self.weighted_express_core(
+            score_t,
+            current_bounds,
+            lambda_=lambda_,
+            distance_normalization=distance_normalization,
+            max_distance=max_distance,
+            max_rank_pct=max_rank_pct,
+            max_neighbors=None,
+            distance_backend=distance_backend,
+            debug=debug,
+        )
+        self._weighted_express_last_diagnostics = diagnostics
+        return buffer, n_positive_weights, diagnostics
+
+    def adaptive_weighted_express_stress_from_count(
+        self,
+        n_low_distance,
+        target_low_distance_count=6,
+        stress_mode="linear",
+        stress_midpoint_count=6,
+        stress_slope=0.8,
+    ):
+        n_low_distance = int(n_low_distance)
+
+        if stress_mode == "linear":
+            target_low_distance_count = int(target_low_distance_count)
+            if target_low_distance_count <= 0:
+                raise ValueError(
+                    "adaptive_weighted_express_target_low_distance_count must be positive"
+                )
+            stress = (target_low_distance_count - n_low_distance) / target_low_distance_count
+            return float(np.clip(stress, 0.0, 1.0))
+
+        if stress_mode == "sigmoid":
+            stress_midpoint_count = int(stress_midpoint_count)
+            if stress_midpoint_count < 0:
+                raise ValueError(
+                    "adaptive_weighted_express_stress_midpoint_count must be nonnegative"
+                )
+            stress_slope = float(stress_slope)
+            if stress_slope <= 0:
+                raise ValueError("adaptive_weighted_express_stress_slope must be positive")
+
+            z = stress_slope * (n_low_distance - stress_midpoint_count)
+            if z >= 0:
+                exp_neg_z = np.exp(-z)
+                return float(exp_neg_z / (1.0 + exp_neg_z))
+
+            exp_z = np.exp(z)
+            return float(1.0 / (1.0 + exp_z))
+
+        raise ValueError(
+            "adaptive_weighted_express_stress_mode must be one of ['linear', 'sigmoid'], "
+            f"got {stress_mode!r}"
+        )
+
+    def adaptive_weighted_express(
+        self,
+        score_t,
+        current_bounds,
+        low_distance_threshold=0.01,
+        target_low_distance_count=6,
+        stress_mode="linear",
+        stress_midpoint_count=6,
+        stress_slope=0.8,
+        stress_count_source="low_distance",
+        lambda_min=35.0,
+        lambda_max=300.0,
+        max_distance=1.0,
+        distance_backend="hamming",
+        debug=False,
+    ):
+        """
+        ADAPTIVE-WEIGHTED-EXPRESS makes the distance-decay parameter depend on
+        local data-starvation stress. When enough near-signature candidates
+        exist, the method uses a large lambda and behaves close to exact
+        EXPRESS. When near-signature candidates are scarce, lambda decreases
+        smoothly, allowing more distant calibration points to contribute. This
+        is an empirical relaxation and does not restore the original
+        finite-sample EXPRESS guarantee.
+        """
+        del debug
+
+        low_distance_threshold = float(low_distance_threshold)
+        if low_distance_threshold < 0 or low_distance_threshold > 1:
+            raise ValueError("adaptive_weighted_express_low_distance_threshold must be in [0, 1]")
+
+        target_low_distance_count = int(target_low_distance_count)
+        if target_low_distance_count <= 0:
+            raise ValueError("adaptive_weighted_express_target_low_distance_count must be positive")
+
+        if stress_mode not in {"linear", "sigmoid"}:
+            raise ValueError(
+                "adaptive_weighted_express_stress_mode must be one of ['linear', 'sigmoid'], "
+                f"got {stress_mode!r}"
+            )
+        if stress_count_source not in {"low_distance", "express_calibration"}:
+            raise ValueError(
+                "adaptive_weighted_express_stress_count_source must be one of "
+                "['low_distance', 'express_calibration'], "
+                f"got {stress_count_source!r}"
+            )
+        stress_midpoint_count = int(stress_midpoint_count)
+        if stress_midpoint_count < 0:
+            raise ValueError("adaptive_weighted_express_stress_midpoint_count must be nonnegative")
+        stress_slope = float(stress_slope)
+        if stress_slope <= 0:
+            raise ValueError("adaptive_weighted_express_stress_slope must be positive")
+
+        lambda_min = float(lambda_min)
+        lambda_max = float(lambda_max)
+        if lambda_min <= 0:
+            raise ValueError("adaptive_weighted_express_lambda_min must be positive")
+        if lambda_max <= 0:
+            raise ValueError("adaptive_weighted_express_lambda_max must be positive")
+        if lambda_max < lambda_min:
+            raise ValueError("adaptive_weighted_express_lambda_max must be >= lambda_min")
+
+        if max_distance is not None:
+            max_distance = float(max_distance)
+            if max_distance < 0 or max_distance > 1:
+                raise ValueError("adaptive_weighted_express_max_distance must be in [0, 1] or null")
+
+        empty_stress = self.adaptive_weighted_express_stress_from_count(
+            0,
+            target_low_distance_count=target_low_distance_count,
+            stress_mode=stress_mode,
+            stress_midpoint_count=stress_midpoint_count,
+            stress_slope=stress_slope,
+        )
+        empty_lambda_t = float(lambda_max ** (1.0 - empty_stress) * lambda_min ** empty_stress)
+
+        candidate_residuals = np.concatenate([
+            self.residuals_off,
+            self.residuals_past,
+        ])
+        candidate_scores = np.concatenate([
+            self.scores_off,
+            self.scores_past,
+        ])
+
+        if len(candidate_residuals) == 0:
+            diagnostics = {
+                "low_distance_threshold": low_distance_threshold,
+                "target_low_distance_count": target_low_distance_count,
+                "lambda_min": lambda_min,
+                "lambda_max": lambda_max,
+                "lambda_t": empty_lambda_t,
+                "stress": empty_stress,
+                "stress_mode": stress_mode,
+                "stress_midpoint_count": stress_midpoint_count,
+                "stress_slope": stress_slope,
+                "stress_count_source": stress_count_source,
+                "stress_count": 0,
+                "express_n_calibration_for_stress": 0,
+                "n_low_distance": 0,
+                "max_distance_cutoff": np.nan if max_distance is None else max_distance,
+                "distance_backend": distance_backend,
+                "n_candidates_total": 0,
+                "n_positive_weights": 0,
+                "positive_weight_fraction": 0.0,
+                "sum_positive_weights": 0.0,
+                "sum_raw_weights": 0.0,
+                "finite_mass": 0.0,
+                "test_mass": 1.0,
+                "min_distance": np.nan,
+                "median_distance": np.nan,
+                "mean_distance": np.nan,
+                "max_distance": np.nan,
+                "min_weight": np.nan,
+                "median_weight": np.nan,
+                "mean_weight": np.nan,
+                "max_weight": np.nan,
+                "n_eff": 0.0,
+                "n_eff_finite": 0.0,
+                "weighted_mean_distance": np.nan,
+                "stress_weighted_distance": 0.0,
+                "infinite": True,
+            }
+            self._adaptive_weighted_express_last_diagnostics = diagnostics
+            return np.inf, 0, diagnostics
+
+        current_lower, current_upper = current_bounds
+        lower_bounds = np.append(self.bounds_past_lower, current_lower)
+        upper_bounds = np.append(self.bounds_past, current_upper)
+        history_length = max(len(lower_bounds), 1)
+
+        raw_distances = self.signature_distance(
+            candidate_scores,
+            score_t,
+            lower_bounds,
+            upper_bounds,
+            distance_backend=distance_backend,
+        )
+        distances = raw_distances / history_length
+
+        n_low_distance = int(np.sum(distances <= low_distance_threshold))
+        express_n_calibration_for_stress = np.nan
+        if stress_count_source == "express_calibration":
+            express_n_calibration_for_stress = int(len(self.express(score_t, current_bounds)))
+            stress_count = express_n_calibration_for_stress
+        else:
+            stress_count = n_low_distance
+        stress = self.adaptive_weighted_express_stress_from_count(
+            stress_count,
+            target_low_distance_count=target_low_distance_count,
+            stress_mode=stress_mode,
+            stress_midpoint_count=stress_midpoint_count,
+            stress_slope=stress_slope,
+        )
+        lambda_t = float(lambda_max ** (1.0 - stress) * lambda_min ** stress)
+
+        raw_weights = np.exp(-lambda_t * distances)
+        if max_distance is not None:
+            raw_weights[distances > max_distance] = 0.0
+
+        buffer = self.weighted_quantile_threshold(candidate_residuals, raw_weights)
+
+        positive_weights = raw_weights > 0
+        n_positive_weights = int(np.sum(positive_weights))
+        sum_raw_weights = float(np.sum(raw_weights))
+        denom = 1.0 + sum_raw_weights
+        normalized_weights = raw_weights / denom
+        finite_weight_sum = float(np.sum(normalized_weights))
+        weight_square_sum = float(np.sum(normalized_weights ** 2))
+        weight_square_sum_raw = float(np.sum(raw_weights ** 2))
+
+        diagnostics = {
+            "low_distance_threshold": float(low_distance_threshold),
+            "target_low_distance_count": int(target_low_distance_count),
+            "lambda_min": float(lambda_min),
+            "lambda_max": float(lambda_max),
+            "lambda_t": float(lambda_t),
+            "stress": float(stress),
+            "stress_mode": stress_mode,
+            "stress_midpoint_count": int(stress_midpoint_count),
+            "stress_slope": float(stress_slope),
+            "stress_count_source": stress_count_source,
+            "stress_count": int(stress_count),
+            "express_n_calibration_for_stress": express_n_calibration_for_stress,
+            "n_low_distance": int(n_low_distance),
+            "max_distance_cutoff": np.nan if max_distance is None else float(max_distance),
+            "distance_backend": distance_backend,
+            "n_candidates_total": int(len(candidate_residuals)),
+            "n_positive_weights": n_positive_weights,
+            "positive_weight_fraction": float(n_positive_weights / len(raw_weights)),
+            "sum_positive_weights": float(np.sum(raw_weights[positive_weights])),
+            "sum_raw_weights": sum_raw_weights,
+            "finite_mass": float(sum_raw_weights / denom),
+            "test_mass": float(1.0 / denom),
+            "min_distance": float(np.min(distances)),
+            "median_distance": float(np.median(distances)),
+            "mean_distance": float(np.mean(distances)),
+            "max_distance": float(np.max(distances)),
+            "min_weight": float(np.min(raw_weights)),
+            "median_weight": float(np.median(raw_weights)),
+            "mean_weight": float(np.mean(raw_weights)),
+            "max_weight": float(np.max(raw_weights)),
+            "n_eff": float(1.0 / weight_square_sum) if weight_square_sum > 0 else 0.0,
+            "n_eff_finite": (
+                float((sum_raw_weights ** 2) / weight_square_sum_raw)
+                if sum_raw_weights > 0 and weight_square_sum_raw > 0
+                else 0.0
+            ),
+            "weighted_mean_distance": (
+                float(np.sum(normalized_weights * distances) / finite_weight_sum)
+                if finite_weight_sum > 0
+                else np.nan
+            ),
+            "stress_weighted_distance": float(np.sum(normalized_weights * distances)),
+            "infinite": bool(np.isinf(buffer)),
+        }
+        self._adaptive_weighted_express_last_diagnostics = diagnostics
+        return buffer, n_positive_weights, diagnostics
+
+    def weighted_neighborhood_express(
+        self,
+        score_t,
+        current_bounds,
+        lambda_=1.0,
+        distance_normalization="rank",
+        max_distance=None,
+        max_rank_pct=0.05,
+        max_neighbors=200,
+        distance_backend="endpoint",
+        debug=False,
+    ):
+        buffer, n_positive_weights, diagnostics = self.weighted_express_core(
+            score_t,
+            current_bounds,
+            lambda_=lambda_,
+            distance_normalization=distance_normalization,
+            max_distance=max_distance,
+            max_rank_pct=max_rank_pct,
+            max_neighbors=max_neighbors,
+            distance_backend=distance_backend,
+            debug=debug,
+        )
+        self._weighted_neighborhood_express_last_diagnostics = diagnostics
+        return buffer, n_positive_weights, diagnostics
+    
+    def k_express(self, score_t, k, current_bounds):
+        current_lower, current_upper = current_bounds
+        recent_start = max(0, len(self.scores_past) - k)
+        candidate_residuals = np.concatenate([
+            self.residuals_off,
+            self.residuals_past[recent_start:],
+        ])
+        candidate_scores = np.concatenate([
+            self.scores_off,
+            self.scores_past[recent_start:],
+        ])
+        lower_bounds = np.append(self.bounds_past_lower[recent_start:], current_lower)
+        upper_bounds = np.append(self.bounds_past[recent_start:], current_upper)
+        selected_mask = self.same_selection_signature_fast(
+            candidate_scores,
+            score_t,
+            lower_bounds,
+            upper_bounds,
+        )
+        return candidate_residuals[selected_mask]
+
+    def express_m(self, score_t, k, current_bounds):
+        t = len(self.scores_past) + 1
+        if t == 0:
+            return np.inf, 0
+
+        alpha_sf = (1 / np.sqrt(t)) * self.alpha
+        alpha_ex = (1 - (1 / np.sqrt(t))) * self.alpha
+
+        scores_sf = self.s_fix(current_bounds)
+        threshold_sf = self.calibration_threshold(scores_sf, alpha=alpha_sf)
+
+        scores_ex = self.express(score_t, current_bounds)
+        threshold_ex = self.calibration_threshold(scores_ex, alpha=alpha_ex)
+
+        return min(threshold_sf, threshold_ex), len(scores_sf) + len(scores_ex)
+
+    def append_online_point(self, score_t, point_prediction_t, y_t, s_t, bounds_t):
+        self._express_cache_key = None
+        self._express_cache_value = None
+        self._cap_cache_key = None
+        self._cap_cache_value = None
+        self._cap_cache_diagnostics = None
+        lower_t, upper_t = bounds_t
+        history_index = len(self.scores_past)
+        self.scores_past = np.append(self.scores_past, score_t)
+        self.s_past = np.append(self.s_past, s_t)
+        self.bounds_past_lower = np.append(self.bounds_past_lower, lower_t)
+        self.bounds_past = np.append(self.bounds_past, upper_t)
+        self.residuals_past = np.append(
+            self.residuals_past,
+            np.abs(y_t - point_prediction_t),
+        )
+
+        if s_t:
+            self.selected_scores_past = np.append(self.selected_scores_past, score_t)
+            self.selected_y_past = np.append(self.selected_y_past, y_t)
+            self.selected_point_predictions_past = np.append(
+                self.selected_point_predictions_past,
+                point_prediction_t,
+            )
+            self.selected_residuals_past = np.append(
+                self.selected_residuals_past,
+                np.abs(y_t - point_prediction_t),
+            )
+            self.selected_bounds_past_lower = np.append(self.selected_bounds_past_lower, lower_t)
+            self.selected_bounds_past = np.append(self.selected_bounds_past, upper_t)
+            self.selected_history_indices = np.append(self.selected_history_indices, history_index)
+
+    def evaluate_strategy(
+        self,
+        strategy,
+        score_t,
+        y_t,
+        point_prediction_t,
+        current_bounds,
+        k=5,
+        finite_express_target_size=None,
+        finite_express_rank_delta=None,
+        relaxed_express_max_distance=0.02,
+        relaxed_express_debug=False,
+        weighted_express_lambda=1.0,
+        weighted_express_distance_normalization="rank",
+        weighted_express_max_distance=None,
+        weighted_express_max_rank_pct=0.05,
+        weighted_express_debug=False,
+        adaptive_weighted_express_low_distance_threshold=0.01,
+        adaptive_weighted_express_target_low_distance_count=6,
+        adaptive_weighted_express_stress_mode="linear",
+        adaptive_weighted_express_stress_midpoint_count=6,
+        adaptive_weighted_express_stress_slope=0.8,
+        adaptive_weighted_express_stress_count_source="low_distance",
+        adaptive_weighted_express_lambda_min=35.0,
+        adaptive_weighted_express_lambda_max=300.0,
+        adaptive_weighted_express_max_distance=1.0,
+        adaptive_weighted_express_debug=False,
+        weighted_neighborhood_express_lambda=1.0,
+        weighted_neighborhood_express_distance_normalization="rank",
+        weighted_neighborhood_express_max_distance=None,
+        weighted_neighborhood_express_max_rank_pct=0.05,
+        weighted_neighborhood_express_max_neighbors=200,
+        weighted_neighborhood_express_debug=False,
+        random_calibration_size=None,
+        express_distance="endpoint",
+    ):
+        if strategy == "FULL":
+            scores_cal = self.full()
+        elif strategy == "RANDOM":
+            scores_cal, diagnostics = self.random(random_calibration_size)
+        elif strategy == "S-FULL":
+            scores_cal = self.s_full(current_bounds)
+        elif strategy == "S-FIX":
+            scores_cal = self.s_fix(current_bounds)
+        elif strategy == "ADA":
+            scores_off = self.ada_off(current_bounds)
+            scores_on = self.ada_on(score_t, current_bounds)
+            scores_cal = np.concatenate([scores_off, scores_on])
+        elif strategy == "CAP":
+            scores_cal = self.cap(score_t, current_bounds)
+        elif strategy == "EXPRESS":
+            scores_cal = self.express(score_t, current_bounds)
+        elif strategy == "FINITE-EXPRESS":
+            target_size = finite_express_target_size
+            if target_size is None:
+                target_size = self.finite_express_target_size_from_delta(
+                    finite_express_rank_delta
+                )
+
+            scores_cal = self.finite_express(
+                score_t,
+                current_bounds,
+                target_size=target_size,
+                distance_backend="hamming",
+            )
+        elif strategy == "RELAXED-EXPRESS":
+            scores_cal = self.relaxed_express(
+                score_t,
+                current_bounds,
+                max_distance=relaxed_express_max_distance,
+                distance_backend=express_distance,
+                debug=relaxed_express_debug,
+            )
+        elif strategy == "K-EXPRESS":
+            scores_cal = self.k_express(score_t, k, current_bounds)
+        elif strategy == "WEIGHTED-EXPRESS":
+            buffer, n_calibration, diagnostics = self.weighted_express(
+                score_t,
+                current_bounds,
+                lambda_=weighted_express_lambda,
+                distance_normalization=weighted_express_distance_normalization,
+                max_distance=weighted_express_max_distance,
+                max_rank_pct=weighted_express_max_rank_pct,
+                distance_backend=express_distance,
+                debug=weighted_express_debug,
+            )
+            covered = np.abs(y_t - point_prediction_t) <= buffer
+
+            return {
+                "miscovered": not covered,
+                "n_calibration": n_calibration,
+                "interval_length": self.interval_length_from_threshold(buffer),
+                "buffer": buffer,
+                "weighted_express_lambda": diagnostics.get("lambda", np.nan),
+                "weighted_express_distance_backend": diagnostics.get(
+                    "distance_backend",
+                    np.nan,
+                ),
+                "weighted_express_distance_normalization": diagnostics.get(
+                    "distance_normalization",
+                    np.nan,
+                ),
+                "weighted_express_max_distance_cutoff": diagnostics.get(
+                    "max_distance_cutoff",
+                    np.nan,
+                ),
+                "weighted_express_max_rank_pct": diagnostics.get("max_rank_pct", np.nan),
+                "weighted_express_n_candidates_total": diagnostics.get(
+                    "n_candidates_total",
+                    np.nan,
+                ),
+                "weighted_express_n_positive_weights": diagnostics.get(
+                    "n_positive_weights",
+                    np.nan,
+                ),
+                "weighted_express_positive_weight_fraction": diagnostics.get(
+                    "positive_weight_fraction",
+                    np.nan,
+                ),
+                "weighted_express_sum_positive_weights": diagnostics.get(
+                    "sum_positive_weights",
+                    np.nan,
+                ),
+                "weighted_express_sum_raw_weights": diagnostics.get("sum_raw_weights", np.nan),
+                "weighted_express_finite_mass": diagnostics.get("finite_mass", np.nan),
+                "weighted_express_test_mass": diagnostics.get("test_mass", np.nan),
+                "weighted_express_min_distance": diagnostics.get("min_distance", np.nan),
+                "weighted_express_median_distance": diagnostics.get(
+                    "median_distance",
+                    np.nan,
+                ),
+                "weighted_express_mean_distance": diagnostics.get("mean_distance", np.nan),
+                "weighted_express_max_distance": diagnostics.get("max_distance", np.nan),
+                "weighted_express_min_weight": diagnostics.get("min_weight", np.nan),
+                "weighted_express_median_weight": diagnostics.get("median_weight", np.nan),
+                "weighted_express_mean_weight": diagnostics.get("mean_weight", np.nan),
+                "weighted_express_max_weight": diagnostics.get("max_weight", np.nan),
+                "weighted_express_n_eff": diagnostics.get("n_eff", np.nan),
+                "weighted_express_n_eff_finite": diagnostics.get("n_eff_finite", np.nan),
+                "weighted_express_weighted_mean_distance": diagnostics.get(
+                    "weighted_mean_distance",
+                    np.nan,
+                ),
+                "weighted_express_stress": diagnostics.get("stress", np.nan),
+                "weighted_express_infinite": diagnostics.get("infinite", np.nan),
+            }
+        elif strategy == "ADAPTIVE-WEIGHTED-EXPRESS":
+            buffer, n_calibration, diagnostics = self.adaptive_weighted_express(
+                score_t,
+                current_bounds,
+                low_distance_threshold=adaptive_weighted_express_low_distance_threshold,
+                target_low_distance_count=adaptive_weighted_express_target_low_distance_count,
+                stress_mode=adaptive_weighted_express_stress_mode,
+                stress_midpoint_count=adaptive_weighted_express_stress_midpoint_count,
+                stress_slope=adaptive_weighted_express_stress_slope,
+                stress_count_source=adaptive_weighted_express_stress_count_source,
+                lambda_min=adaptive_weighted_express_lambda_min,
+                lambda_max=adaptive_weighted_express_lambda_max,
+                max_distance=adaptive_weighted_express_max_distance,
+                distance_backend=express_distance,
+                debug=adaptive_weighted_express_debug,
+            )
+            covered = np.abs(y_t - point_prediction_t) <= buffer
+
+            return {
+                "miscovered": not covered,
+                "n_calibration": n_calibration,
+                "interval_length": self.interval_length_from_threshold(buffer),
+                "buffer": buffer,
+                "adaptive_weighted_express_low_distance_threshold": diagnostics.get(
+                    "low_distance_threshold",
+                    np.nan,
+                ),
+                "adaptive_weighted_express_target_low_distance_count": diagnostics.get(
+                    "target_low_distance_count",
+                    np.nan,
+                ),
+                "adaptive_weighted_express_lambda_min": diagnostics.get("lambda_min", np.nan),
+                "adaptive_weighted_express_lambda_max": diagnostics.get("lambda_max", np.nan),
+                "adaptive_weighted_express_lambda_t": diagnostics.get("lambda_t", np.nan),
+                "adaptive_weighted_express_stress": diagnostics.get("stress", np.nan),
+                "adaptive_weighted_express_stress_mode": diagnostics.get(
+                    "stress_mode",
+                    np.nan,
+                ),
+                "adaptive_weighted_express_stress_midpoint_count": diagnostics.get(
+                    "stress_midpoint_count",
+                    np.nan,
+                ),
+                "adaptive_weighted_express_stress_slope": diagnostics.get(
+                    "stress_slope",
+                    np.nan,
+                ),
+                "adaptive_weighted_express_stress_count_source": diagnostics.get(
+                    "stress_count_source",
+                    np.nan,
+                ),
+                "adaptive_weighted_express_stress_count": diagnostics.get(
+                    "stress_count",
+                    np.nan,
+                ),
+                "adaptive_weighted_express_express_n_calibration_for_stress": diagnostics.get(
+                    "express_n_calibration_for_stress",
+                    np.nan,
+                ),
+                "adaptive_weighted_express_n_low_distance": diagnostics.get(
+                    "n_low_distance",
+                    np.nan,
+                ),
+                "adaptive_weighted_express_max_distance_cutoff": diagnostics.get(
+                    "max_distance_cutoff",
+                    np.nan,
+                ),
+                "adaptive_weighted_express_distance_backend": diagnostics.get(
+                    "distance_backend",
+                    np.nan,
+                ),
+                "adaptive_weighted_express_n_candidates_total": diagnostics.get(
+                    "n_candidates_total",
+                    np.nan,
+                ),
+                "adaptive_weighted_express_n_positive_weights": diagnostics.get(
+                    "n_positive_weights",
+                    np.nan,
+                ),
+                "adaptive_weighted_express_positive_weight_fraction": diagnostics.get(
+                    "positive_weight_fraction",
+                    np.nan,
+                ),
+                "adaptive_weighted_express_sum_positive_weights": diagnostics.get(
+                    "sum_positive_weights",
+                    np.nan,
+                ),
+                "adaptive_weighted_express_sum_raw_weights": diagnostics.get(
+                    "sum_raw_weights",
+                    np.nan,
+                ),
+                "adaptive_weighted_express_finite_mass": diagnostics.get("finite_mass", np.nan),
+                "adaptive_weighted_express_test_mass": diagnostics.get("test_mass", np.nan),
+                "adaptive_weighted_express_min_distance": diagnostics.get("min_distance", np.nan),
+                "adaptive_weighted_express_median_distance": diagnostics.get(
+                    "median_distance",
+                    np.nan,
+                ),
+                "adaptive_weighted_express_mean_distance": diagnostics.get(
+                    "mean_distance",
+                    np.nan,
+                ),
+                "adaptive_weighted_express_max_distance": diagnostics.get("max_distance", np.nan),
+                "adaptive_weighted_express_min_weight": diagnostics.get("min_weight", np.nan),
+                "adaptive_weighted_express_median_weight": diagnostics.get(
+                    "median_weight",
+                    np.nan,
+                ),
+                "adaptive_weighted_express_mean_weight": diagnostics.get("mean_weight", np.nan),
+                "adaptive_weighted_express_max_weight": diagnostics.get("max_weight", np.nan),
+                "adaptive_weighted_express_n_eff": diagnostics.get("n_eff", np.nan),
+                "adaptive_weighted_express_n_eff_finite": diagnostics.get(
+                    "n_eff_finite",
+                    np.nan,
+                ),
+                "adaptive_weighted_express_weighted_mean_distance": diagnostics.get(
+                    "weighted_mean_distance",
+                    np.nan,
+                ),
+                "adaptive_weighted_express_stress_weighted_distance": diagnostics.get(
+                    "stress_weighted_distance",
+                    np.nan,
+                ),
+                "adaptive_weighted_express_infinite": diagnostics.get("infinite", np.nan),
+            }
+        elif strategy == "WEIGHTED-NEIGHBORHOOD-EXPRESS":
+            buffer, n_calibration, diagnostics = self.weighted_neighborhood_express(
+                score_t,
+                current_bounds,
+                lambda_=weighted_neighborhood_express_lambda,
+                distance_normalization=weighted_neighborhood_express_distance_normalization,
+                max_distance=weighted_neighborhood_express_max_distance,
+                max_rank_pct=weighted_neighborhood_express_max_rank_pct,
+                max_neighbors=weighted_neighborhood_express_max_neighbors,
+                distance_backend=express_distance,
+                debug=weighted_neighborhood_express_debug,
+            )
+            covered = np.abs(y_t - point_prediction_t) <= buffer
+
+            return {
+                "miscovered": not covered,
+                "n_calibration": n_calibration,
+                "interval_length": self.interval_length_from_threshold(buffer),
+                "buffer": buffer,
+                "weighted_neighborhood_express_lambda": diagnostics.get("lambda", np.nan),
+                "weighted_neighborhood_express_distance_backend": diagnostics.get(
+                    "distance_backend",
+                    np.nan,
+                ),
+                "weighted_neighborhood_express_distance_normalization": diagnostics.get(
+                    "distance_normalization",
+                    np.nan,
+                ),
+                "weighted_neighborhood_express_max_distance_cutoff": diagnostics.get(
+                    "max_distance_cutoff",
+                    np.nan,
+                ),
+                "weighted_neighborhood_express_max_rank_pct": diagnostics.get(
+                    "max_rank_pct",
+                    np.nan,
+                ),
+                "weighted_neighborhood_express_max_neighbors": diagnostics.get(
+                    "max_neighbors",
+                    np.nan,
+                ),
+                "weighted_neighborhood_express_n_candidates_total": diagnostics.get(
+                    "n_candidates_total",
+                    np.nan,
+                ),
+                "weighted_neighborhood_express_n_after_neighbor_cap": diagnostics.get(
+                    "n_after_neighbor_cap",
+                    np.nan,
+                ),
+                "weighted_neighborhood_express_neighbor_cap_active": diagnostics.get(
+                    "neighbor_cap_active",
+                    np.nan,
+                ),
+                "weighted_neighborhood_express_neighbor_cap_boundary_distance": diagnostics.get(
+                    "neighbor_cap_boundary_distance",
+                    np.nan,
+                ),
+                "weighted_neighborhood_express_n_positive_weights": diagnostics.get(
+                    "n_positive_weights",
+                    np.nan,
+                ),
+                "weighted_neighborhood_express_positive_weight_fraction": diagnostics.get(
+                    "positive_weight_fraction",
+                    np.nan,
+                ),
+                "weighted_neighborhood_express_sum_positive_weights": diagnostics.get(
+                    "sum_positive_weights",
+                    np.nan,
+                ),
+                "weighted_neighborhood_express_sum_raw_weights": diagnostics.get(
+                    "sum_raw_weights",
+                    np.nan,
+                ),
+                "weighted_neighborhood_express_finite_mass": diagnostics.get(
+                    "finite_mass",
+                    np.nan,
+                ),
+                "weighted_neighborhood_express_test_mass": diagnostics.get(
+                    "test_mass",
+                    np.nan,
+                ),
+                "weighted_neighborhood_express_min_distance": diagnostics.get(
+                    "min_distance",
+                    np.nan,
+                ),
+                "weighted_neighborhood_express_median_distance": diagnostics.get(
+                    "median_distance",
+                    np.nan,
+                ),
+                "weighted_neighborhood_express_mean_distance": diagnostics.get(
+                    "mean_distance",
+                    np.nan,
+                ),
+                "weighted_neighborhood_express_max_distance": diagnostics.get(
+                    "max_distance",
+                    np.nan,
+                ),
+                "weighted_neighborhood_express_min_weight": diagnostics.get(
+                    "min_weight",
+                    np.nan,
+                ),
+                "weighted_neighborhood_express_median_weight": diagnostics.get(
+                    "median_weight",
+                    np.nan,
+                ),
+                "weighted_neighborhood_express_mean_weight": diagnostics.get(
+                    "mean_weight",
+                    np.nan,
+                ),
+                "weighted_neighborhood_express_max_weight": diagnostics.get(
+                    "max_weight",
+                    np.nan,
+                ),
+                "weighted_neighborhood_express_n_eff": diagnostics.get("n_eff", np.nan),
+                "weighted_neighborhood_express_n_eff_finite": diagnostics.get(
+                    "n_eff_finite",
+                    np.nan,
+                ),
+                "weighted_neighborhood_express_weighted_mean_distance": diagnostics.get(
+                    "weighted_mean_distance",
+                    np.nan,
+                ),
+                "weighted_neighborhood_express_stress": diagnostics.get("stress", np.nan),
+                "weighted_neighborhood_express_infinite": diagnostics.get(
+                    "infinite",
+                    np.nan,
+                ),
+            }
+        elif strategy == "EXPRESS-M":
+            buffer, n_calibration = self.express_m(score_t, k, current_bounds)
+            covered = np.abs(y_t - point_prediction_t) <= buffer
+
+            return {
+                "miscovered": not covered,
+                "n_calibration": n_calibration,
+                "interval_length": self.interval_length_from_threshold(buffer),
+                "buffer": buffer,
+            }
+        else:
+            raise ValueError(f"Unknown strategy: {strategy}")
+
+        buffer = self.calibration_threshold(scores_cal)
+        covered = np.abs(y_t - point_prediction_t) <= buffer
+
+        result = {
+            "miscovered": not covered,
+            "n_calibration": len(scores_cal),
+            "interval_length": self.interval_length_from_threshold(buffer),
+            "buffer": buffer,
+        }
+
+        if strategy == "RANDOM":
+            result.update({
+                "random_requested_size": diagnostics.get("requested_size", np.nan),
+                "random_n_candidates_total": diagnostics.get("n_candidates_total", np.nan),
+                "random_chosen_size": diagnostics.get("chosen_size", np.nan),
+            })
+
+        if strategy == "CAP":
+            diagnostics = self._cap_last_diagnostics or {}
+            result.update({
+                "cap_n_candidates_total": diagnostics.get("n_candidates_total", np.nan),
+                "cap_n_offline_candidates": diagnostics.get("n_offline_candidates", np.nan),
+                "cap_n_online_candidates": diagnostics.get("n_online_candidates", np.nan),
+                "cap_n_current_selected_online": diagnostics.get(
+                    "n_current_selected_online",
+                    np.nan,
+                ),
+                "cap_n_current_selected_candidates": diagnostics.get(
+                    "n_current_selected_candidates",
+                    np.nan,
+                ),
+                "cap_history_match_count": diagnostics.get("history_match_count", np.nan),
+                "cap_chosen_size": diagnostics.get("chosen_size", np.nan),
+                "cap_offline_chosen": diagnostics.get("offline_chosen", np.nan),
+                "cap_online_chosen": diagnostics.get("online_chosen", np.nan),
+                "cap_inner_constraint_count": diagnostics.get(
+                    "inner_constraint_count",
+                    np.nan,
+                ),
+            })
+
+        if strategy == "FINITE-EXPRESS":
+            diagnostics = self._finite_express_last_diagnostics or {}
+            result.update({
+                "finite_express_exact_matches": diagnostics.get("exact_matches", np.nan),
+                "finite_express_chosen_size": diagnostics.get("chosen_size", np.nan),
+                "finite_express_target_size": diagnostics.get("target_size", np.nan),
+                "finite_express_distance_backend": diagnostics.get("distance_backend", np.nan),
+                "finite_express_max_distance": diagnostics.get("max_distance", np.nan),
+                "finite_express_mean_distance": diagnostics.get("mean_distance", np.nan),
+                "finite_express_relaxation_needed": diagnostics.get("relaxation_needed", np.nan),
+                "finite_express_added_nonexact": diagnostics.get("added_nonexact", np.nan),
+                **coverage_gap_bound_result_fields("finite_express", diagnostics),
+            })
+
+        if strategy == "RELAXED-EXPRESS":
+            diagnostics = self._relaxed_express_last_diagnostics or {}
+            result.update({
+                "relaxed_express_max_distance": diagnostics.get("max_distance", np.nan),
+                "relaxed_express_distance_backend": diagnostics.get(
+                    "distance_backend",
+                    np.nan,
+                ),
+                "relaxed_express_n_candidates_total": diagnostics.get(
+                    "n_candidates_total",
+                    np.nan,
+                ),
+                "relaxed_express_chosen_size": diagnostics.get("chosen_size", np.nan),
+                "relaxed_express_exact_matches": diagnostics.get("exact_matches", np.nan),
+                "relaxed_express_max_chosen_distance": diagnostics.get(
+                    "max_chosen_distance",
+                    np.nan,
+                ),
+                "relaxed_express_mean_chosen_distance": diagnostics.get(
+                    "mean_chosen_distance",
+                    np.nan,
+                ),
+                "relaxed_express_median_chosen_distance": diagnostics.get(
+                    "median_chosen_distance",
+                    np.nan,
+                ),
+                "relaxed_express_min_distance": diagnostics.get("min_distance", np.nan),
+                "relaxed_express_median_distance": diagnostics.get(
+                    "median_distance",
+                    np.nan,
+                ),
+                "relaxed_express_mean_distance": diagnostics.get("mean_distance", np.nan),
+                "relaxed_express_max_distance_observed": diagnostics.get(
+                    "max_distance_observed",
+                    np.nan,
+                ),
+                **coverage_gap_bound_result_fields("relaxed_express", diagnostics),
+            })
+
+        return result

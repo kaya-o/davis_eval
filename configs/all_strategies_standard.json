@@ -1,0 +1,61 @@
+{
+  "experiment_name": "all_strategies_standard",
+  "n_runs": 1,
+  "seed": 42,
+  "data": {
+    "path": "data/davis_other_data_models.csv",
+    "n_off": 500,
+    "n_on": 20000,
+    "label_column": "Label"
+  },
+  "selection": {
+    "score_column": "muhat_2",
+    "tau_1": 5.0,
+    "tau_0": 2000,
+    "window_width": 1.0
+  },
+  "prediction": {
+    "point_prediction_column": "muhat_1"
+  },
+  "conformal": {
+    "alpha": 0.1,
+    "randomized_calibration": true,
+    "express_distance": "hamming",
+    "random_calibration_size": 9,
+    "k_express": 7500,
+    "finite_express_target_size": null,
+    "finite_express_rank_delta": null,
+    "relaxed_express_max_distance": 0.02,
+    "weighted_express_lambda": 25.0,
+    "weighted_express_distance_normalization": "history_length",
+    "weighted_express_max_distance": null,
+    "adaptive_weighted_express_low_distance_threshold": 0.0,
+    "adaptive_weighted_express_stress_mode": "sigmoid",
+    "adaptive_weighted_express_stress_midpoint_count": 75,
+    "adaptive_weighted_express_stress_slope": 0.1,
+    "adaptive_weighted_express_stress_count_source": "express_calibration",
+    "adaptive_weighted_express_lambda_min": 1.0,
+    "adaptive_weighted_express_lambda_max": 100.0,
+    "adaptive_weighted_express_max_distance": 0.05,
+    "weighted_neighborhood_express_lambda": 25.0,
+    "weighted_neighborhood_express_distance_normalization": "history_length",
+    "weighted_neighborhood_express_max_distance": null,
+    "weighted_neighborhood_express_max_neighbors": 200
+  },
+  "strategies": [
+    "FULL",
+    "RANDOM",
+    "S-FULL",
+    "S-FIX",
+    "ADA",
+    "CAP",
+    "EXPRESS",
+    "FINITE-EXPRESS",
+    "RELAXED-EXPRESS",
+    "K-EXPRESS",
+    "WEIGHTED-EXPRESS",
+    "ADAPTIVE-WEIGHTED-EXPRESS",
+    "WEIGHTED-NEIGHBORHOOD-EXPRESS",
+    "EXPRESS-M"
+  ]
+}
